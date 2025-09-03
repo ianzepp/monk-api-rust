@@ -6,7 +6,7 @@ use axum::{
     // JSON response type - automatically serializes Rust data to JSON
     response::Json,
     // Routing macros - define HTTP methods and URL patterns
-    routing::{get, post, put, delete},
+    routing::{get, post, put, patch, delete},
     // Main router struct - combines all routes into a single application
     Router,
 };
@@ -16,12 +16,13 @@ use serde_json::{json, Value}; // `json!` macro creates JSON, `Value` is any JSO
 use tower_http::cors::CorsLayer;   // Cross-Origin Resource Sharing
 use tower_http::trace::TraceLayer; // HTTP request/response logging
 
-// Import our organized handler modules
-// This is equivalent to your TypeScript: import * as authRoutes from '@src/routes/auth/routes.js'
-mod handlers;                    // Declare the handlers module
-use handlers::auth;             // Import auth handlers
-use handlers::data;             // Import data handlers  
-use handlers::meta;             // Import meta handlers
+// Import our 3-tier handler architecture  
+// This mirrors the monk-api TypeScript security model:
+// - public/* → src/public/*
+// - protected/* → src/routes/*  
+// - elevated/* → src/routes/root/*
+mod handlers;
+use handlers::{public, protected, elevated};
 
 // The `#[tokio::main]` attribute macro transforms this into an async runtime
 // Tokio is Rust's most popular async runtime - handles async/await execution
@@ -31,35 +32,50 @@ async fn main() {
     // `fmt()` creates a default formatter, `init()` starts the subscriber
     tracing_subscriber::fmt::init();
 
-    // Build the application router - this defines all HTTP routes
-    // `Router::new()` creates an empty router, then we chain methods to add routes
+    // Build the 3-tier application router matching monk-api security model
     let app = Router::new()
-        // Basic server endpoints
+        // Basic server endpoints  
         .route("/", get(root))
         .route("/health", get(health))
         
-        // Auth API endpoints - imported from handlers::auth module  
-        // Equivalent to your TypeScript: app.get('/api/auth/whoami', authRoutes.WhoamiGet)
-        .route("/api/auth/whoami", get(auth::whoami_get))
-        .route("/api/auth/sudo", post(auth::sudo_post))
+        // =============================================================================
+        // TIER 1: PUBLIC ROUTES (No Authentication Required)
+        // =============================================================================
+        // Public authentication routes for token acquisition (/auth/*)
+        .route("/auth/login", post(public::auth::login_post))       // Get JWT token
+        .route("/auth/register", post(public::auth::register_post)) // Create account
+        .route("/auth/refresh", post(public::auth::refresh_post))   // Refresh token
         
-        // Data API endpoints - imported from handlers::data module
-        // Schema-level operations (no ID parameter)
-        .route("/api/data/:schema", get(data::schema_get))      // List records
-        .route("/api/data/:schema", post(data::schema_post))    // Create records  
-        .route("/api/data/:schema", put(data::schema_put))      // Bulk update
-        .route("/api/data/:schema", delete(data::schema_delete)) // Bulk delete
+        // =============================================================================
+        // TIER 2: PROTECTED ROUTES (JWT Authentication Required)  
+        // =============================================================================
+        // Protected authentication routes for user management (/api/auth/*)
+        .route("/api/auth/whoami", get(protected::auth::whoami_get)) // User info
+        .route("/api/auth/sudo", post(protected::auth::sudo_post))   // Elevate to root
         
-        // Record-level operations (with ID parameter) - TODO: implement these handlers
-        // .route("/api/data/:schema/:record", get(data::record_get))
-        // .route("/api/data/:schema/:record", put(data::record_put))  
-        // .route("/api/data/:schema/:record", delete(data::record_delete))
+        // Protected data operations (/api/data/*)
+        .route("/api/data/:schema", get(protected::data::schema_get))       // List records
+        .route("/api/data/:schema", post(protected::data::schema_post))     // Create records
+        .route("/api/data/:schema", put(protected::data::schema_put))       // Bulk update  
+        .route("/api/data/:schema", delete(protected::data::schema_delete)) // Bulk delete
         
-        // Meta API endpoints - imported from handlers::meta module
-        .route("/api/meta/:schema", get(meta::schema_get))      // Get schema definition
-        .route("/api/meta/:schema", post(meta::schema_post))    // Create schema
-        .route("/api/meta/:schema", put(meta::schema_put))      // Update schema
-        .route("/api/meta/:schema", delete(meta::schema_delete)) // Delete schema
+        // Protected schema management (/api/meta/*)
+        .route("/api/meta/:schema", get(protected::meta::schema_get))       // Get schema def
+        .route("/api/meta/:schema", post(protected::meta::schema_post))     // Create schema
+        .route("/api/meta/:schema", put(protected::meta::schema_put))       // Update schema
+        .route("/api/meta/:schema", delete(protected::meta::schema_delete)) // Delete schema
+        
+        // =============================================================================
+        // TIER 3: ELEVATED ROUTES (Root JWT Authentication Required)
+        // =============================================================================
+        // Root administrative operations (/api/root/*)
+        .route("/api/root/tenant", post(elevated::root::tenant::tenant_create))       // Create tenant
+        .route("/api/root/tenant", get(elevated::root::tenant::tenant_list))          // List tenants
+        .route("/api/root/tenant/:name", get(elevated::root::tenant::tenant_show))    // Show tenant
+        .route("/api/root/tenant/:name", patch(elevated::root::tenant::tenant_update)) // Update tenant
+        .route("/api/root/tenant/:name", delete(elevated::root::tenant::tenant_delete)) // Delete tenant
+        .route("/api/root/tenant/:name", put(elevated::root::tenant::tenant_restore)) // Restore tenant
+        .route("/api/root/tenant/:name/health", get(elevated::root::tenant::tenant_health)) // Health check
         // Add CORS middleware - allows cross-origin requests from browsers
         // `permissive()` allows all origins (development only!)
         .layer(CorsLayer::permissive())

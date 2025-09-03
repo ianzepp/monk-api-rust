@@ -1,17 +1,17 @@
-// handlers/mod.rs - Main handler module declaration
-// This is Rust's equivalent to TypeScript's index.ts barrel exports
+// handlers/mod.rs - 3-Tier Handler Architecture
+// 
+// This module implements the complete security model from monk-api TypeScript:
+// Public (no auth) → Protected (JWT auth) → Elevated (root JWT auth)
 
-// Declare sub-modules - tells Rust these modules exist
-// Each corresponds to a route group like your TypeScript structure
-pub mod auth;   // /api/auth/* routes
-pub mod data;   // /api/data/* routes  
-pub mod meta;   // /api/meta/* routes
+// Declare the three security tiers
+pub mod public;    // Tier 1: No authentication required (/auth/*)
+pub mod protected; // Tier 2: JWT authentication required (/api/*)  
+pub mod elevated;  // Tier 3: Root JWT authentication required (/api/root/*)
 
-// Re-export handler functions for easy importing
-// This creates a "barrel export" pattern like your TypeScript routes.ts files
-pub use auth::*;  // Re-export all auth handlers
-pub use data::*;  // Re-export all data handlers
-pub use meta::*;  // Re-export all meta handlers
+// Re-export all handlers organized by security tier
+pub use public::*;    // Public authentication endpoints
+pub use protected::*; // Standard API operations  
+pub use elevated::*;  // Administrative operations
 
 /*
 RUST MODULE SYSTEM EXPLANATION:
