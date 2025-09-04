@@ -7,7 +7,6 @@ use uuid::Uuid;
 use crate::observer::traits::{Observer, DatabaseObserver, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
-use crate::observer::stateful_record::{StatefulRecord, SqlOperation};
 use crate::database::manager::DatabaseManager;
 
 /// Ring 5: Create SQL Executor - handles INSERT operations only
@@ -47,13 +46,9 @@ impl DatabaseObserver for CreateSqlExecutor {
         let mut results = Vec::new();
         let mut successful_operations = 0;
         
-        // Process each StatefulRecord
+        // Process each Record
         for record in &ctx.records {
-            // Generate SQL operation from record state
-            let sql_op = record.to_sql_operation(&ctx.schema_name)
-                .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-            
-            match self.execute_insert_operation(&pool, sql_op).await {
+            match self.execute_insert_record(&pool, record, &ctx.schema_name).await {
                 Ok(result) => {
                     results.push(result);
                     successful_operations += 1;
@@ -61,7 +56,7 @@ impl DatabaseObserver for CreateSqlExecutor {
                 Err(error) => {
                     tracing::error!(
                         "CREATE operation failed for record {:?}: {}",
-                        record.id, error
+                        record.id(), error
                     );
                     ctx.errors.push(error);
                 }
@@ -81,48 +76,50 @@ impl DatabaseObserver for CreateSqlExecutor {
 }
 
 impl CreateSqlExecutor {
-    /// Execute INSERT operation
-    async fn execute_insert_operation(&self, pool: &PgPool, sql_op: SqlOperation) -> Result<Value, ObserverError> {
-        match sql_op {
-            SqlOperation::Insert { table, fields, values } => {
-                tracing::debug!("Inserting record into {}: fields={:?}", table, fields);
-                
-                // Build parameterized INSERT query
-                let placeholders = (1..=fields.len())
-                    .map(|i| format!("${}", i))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                
-                let field_list = fields.iter()
-                    .map(|f| format!("\"{}\"", f))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                
-                let query = format!(
-                    "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING *",
-                    table, field_list, placeholders
-                );
-                
-                let mut q = sqlx::query(&query);
-                for value in &values {
-                    q = bind_param(q, value);
-                }
-                
-                let row = q.fetch_one(pool).await
-                    .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-                
-                self.row_to_json(row)
-            }
-            SqlOperation::NoOp => {
-                tracing::debug!("No-op SQL operation for CREATE");
-                Ok(serde_json::json!({}))
-            }
-            _ => {
-                Err(ObserverError::DatabaseError(
-                    format!("CreateSqlExecutor received unexpected operation: {:?}", sql_op)
-                ))
-            }
+    /// Execute INSERT operation for a Record
+    async fn execute_insert_record(
+        &self, 
+        pool: &PgPool, 
+        record: &crate::database::record::Record, 
+        table_name: &str
+    ) -> Result<Value, ObserverError> {
+        let record_data = record.to_hashmap();
+        
+        if record_data.is_empty() {
+            tracing::debug!("Empty record for CREATE operation");
+            return Ok(serde_json::json!({}));
         }
+        
+        let fields: Vec<String> = record_data.keys().cloned().collect();
+        let values: Vec<&Value> = record_data.values().collect();
+        
+        tracing::debug!("Inserting record into {}: fields={:?}", table_name, fields);
+        
+        // Build parameterized INSERT query
+        let placeholders = (1..=fields.len())
+            .map(|i| format!("${}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        
+        let field_list = fields.iter()
+            .map(|f| format!("\"{}\"", f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        
+        let query = format!(
+            "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING *",
+            table_name, field_list, placeholders
+        );
+        
+        let mut q = sqlx::query(&query);
+        for value in &values {
+            q = bind_param(q, value);
+        }
+        
+        let row = q.fetch_one(pool).await
+            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        
+        self.row_to_json(row)
     }
     
     /// Convert database row to JSON

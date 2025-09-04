@@ -4,10 +4,10 @@ use std::time::Instant;
 use serde_json::Value;
 use crate::observer::traits::{ObserverRing, Operation};
 use crate::observer::error::{ObserverError, ObserverWarning};
-use crate::observer::stateful_record::StatefulRecord;
+use crate::database::record::Record;
 use crate::filter::FilterData;
 
-/// Type-safe observer context with StatefulRecord support
+/// Type-safe observer context with Record support
 /// This is the main data structure that flows through the observer pipeline
 #[derive(Debug)]
 pub struct ObserverContext {
@@ -15,8 +15,8 @@ pub struct ObserverContext {
     pub operation: Operation,
     pub schema_name: String,
     
-    // Stateful records - the heart of the pattern
-    pub records: Vec<StatefulRecord>,
+    // Records - much simpler than StatefulRecord!
+    pub records: Vec<Record>,
     
     // SELECT-specific: Query filter data (for SELECT operations)
     pub filter_data: Option<FilterData>,
@@ -41,7 +41,7 @@ impl ObserverContext {
     pub fn new(
         operation: Operation,
         schema_name: String, 
-        records: Vec<StatefulRecord>
+        records: Vec<Record>
     ) -> Self {
         Self {
             operation,
@@ -118,47 +118,40 @@ impl ObserverContext {
         self.start_time.elapsed()
     }
     
-    // === StatefulRecord Helper Methods ===
+    // === Record Helper Methods ===
     
     /// Get records that have specific field changes
-    pub fn records_with_field_changes(&self, field: &str) -> Vec<&StatefulRecord> {
+    pub fn records_with_field_changes(&self, field: &str) -> Vec<&Record> {
         self.records.iter()
-            .filter(|record| record.field_changed(field))
-            .collect()
-    }
-    
-    /// Get records changed by API vs observers
-    pub fn records_changed_by_api(&self) -> Vec<&StatefulRecord> {
-        self.records.iter()
-            .filter(|record| !record.metadata.api_changes.is_empty())
+            .filter(|record| record.changed(field))
             .collect()
     }
     
     /// Get records by operation type
-    pub fn records_by_operation(&self, operation: crate::observer::stateful_record::RecordOperation) -> Vec<&StatefulRecord> {
+    pub fn records_by_operation(&self, operation: crate::database::record::Operation) -> Vec<&Record> {
         self.records.iter()
-            .filter(|record| record.operation == operation)
+            .filter(|record| record.operation() == operation)
             .collect()
     }
     
     /// Get mutable records by operation type
-    pub fn records_by_operation_mut(&mut self, operation: crate::observer::stateful_record::RecordOperation) -> Vec<&mut StatefulRecord> {
+    pub fn records_by_operation_mut(&mut self, operation: crate::database::record::Operation) -> Vec<&mut Record> {
         self.records.iter_mut()
-            .filter(|record| record.operation == operation)
+            .filter(|record| record.operation() == operation)
             .collect()
     }
     
     /// Count records by operation type
-    pub fn count_by_operation(&self, operation: crate::observer::stateful_record::RecordOperation) -> usize {
+    pub fn count_by_operation(&self, operation: crate::database::record::Operation) -> usize {
         self.records.iter()
-            .filter(|record| record.operation == operation)
+            .filter(|record| record.operation() == operation)
             .count()
     }
     
     /// Check if any records have changes
     pub fn has_record_changes(&self) -> bool {
         self.records.iter()
-            .any(|record| record.calculate_changes().has_changes)
+            .any(|record| record.has_changes())
     }
 }
 

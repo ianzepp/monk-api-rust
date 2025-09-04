@@ -7,7 +7,6 @@ use uuid::Uuid;
 use crate::observer::traits::{Observer, DatabaseObserver, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
-use crate::observer::stateful_record::StatefulRecord;
 use crate::database::manager::DatabaseManager;
 use crate::filter::Filter;
 
@@ -67,8 +66,8 @@ impl DatabaseObserver for SelectSqlExecutor {
         
         let query_time = query_start.elapsed();
         
-        // Convert raw results to StatefulRecords for post-processing rings
-        let mut stateful_records = Vec::new();
+        // Convert raw results to Records for post-processing rings
+        let mut records = Vec::new();
         let mut raw_results = Vec::new();
         
         for row in rows {
@@ -82,16 +81,18 @@ impl DatabaseObserver for SelectSqlExecutor {
                 record_data.insert(column_name.to_string(), value);
             }
             
-            // Create StatefulRecord from SELECT result
-            let stateful_record = StatefulRecord::from_select_result(record_data.clone());
-            stateful_records.push(stateful_record);
+            // Create Record from SELECT result
+            let record = crate::database::record::Record::from_sql_data(
+                record_data.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            );
+            records.push(record);
             
             // Also keep raw JSON for results
             raw_results.push(Value::Object(record_data));
         }
         
-        // Update context with StatefulRecords for post-processing
-        ctx.records = stateful_records;
+        // Update context with Records for post-processing
+        ctx.records = records;
         
         // Store raw results
         ctx.result = Some(raw_results);

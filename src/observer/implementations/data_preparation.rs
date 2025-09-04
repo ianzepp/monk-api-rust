@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use crate::observer::traits::{Observer, GenericObserver, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
-use crate::observer::stateful_record::{StatefulRecord, RecordOperation};
 use crate::database::repository::Repository;
 use crate::filter::FilterData;
 
@@ -60,15 +59,15 @@ impl DataPreparationObserver {
     /// Prepare data for UPDATE operations - load existing records and merge changes
     async fn prepare_update_data(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
         // Skip data loading if records already have original data loaded
-        let needs_preparation = ctx.records.iter().any(|record| record.original.is_none());
+        let needs_preparation = ctx.records.iter().any(|record| record.original().is_none());
         if !needs_preparation {
             tracing::debug!("UPDATE records already have original data loaded, skipping data preparation");
             return Ok(());
         }
 
-        // Extract all IDs from StatefulRecords that need data loading
+        // Extract all IDs from Records that need data loading
         let ids: Vec<Uuid> = ctx.records.iter()
-            .filter_map(|record| record.id)
+            .filter_map(|record| record.id())
             .collect();
 
         if ids.is_empty() {
@@ -81,38 +80,21 @@ impl DataPreparationObserver {
             .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
 
         // Convert existing records to lookup map by ID
-        let mut existing_by_id: HashMap<Uuid, Map<String, Value>> = HashMap::new();
+        let mut existing_by_id: HashMap<Uuid, crate::database::record::Record> = HashMap::new();
         for record in existing_records {
-            // Serialize to JSON to get data map
-            let record_json = serde_json::to_value(record)
-                .map_err(|e| ObserverError::DatabaseError(format!("Failed to serialize existing record: {}", e)))?;
-            
-            if let Value::Object(record_map) = record_json {
-                if let Some(id_value) = record_map.get("id") {
-                    if let Some(id_str) = id_value.as_str() {
-                        if let Ok(record_id) = Uuid::parse_str(id_str) {
-                            existing_by_id.insert(record_id, record_map);
-                        }
-                    }
-                }
+            if let Some(record_id) = record.id() {
+                existing_by_id.insert(record_id, record);
             }
         }
 
-        // Merge existing data with changes for each StatefulRecord
-        let mut prepared_records = Vec::new();
+        // Merge existing data with changes for each Record
         let mut successful_preparations = 0;
 
-        for record in &ctx.records {
-            if let Some(record_id) = record.id {
-                if let Some(existing_data) = existing_by_id.get(&record_id) {
-                    // Create new StatefulRecord with existing data + changes
-                    let changes = record.changes.clone().unwrap_or_default();
-                    let prepared_record = StatefulRecord::existing(
-                        existing_data.clone(),
-                        if changes.is_empty() { None } else { Some(changes) },
-                        RecordOperation::Update
-                    );
-                    prepared_records.push(prepared_record);
+        for record in &mut ctx.records {
+            if let Some(record_id) = record.id() {
+                if let Some(existing_record) = existing_by_id.get(&record_id) {
+                    // Inject existing data into the record for change tracking
+                    record.inject(existing_record.to_hashmap());
                     successful_preparations += 1;
                 } else {
                     let error = ObserverError::NotFound(format!("Record {} not found for update", record_id));
@@ -120,14 +102,11 @@ impl DataPreparationObserver {
                     ctx.errors.push(error);
                 }
             } else {
-                let error = ObserverError::ValidationError("StatefulRecord missing ID for update".to_string());
+                let error = ObserverError::ValidationError("Record missing ID for update".to_string());
                 tracing::error!("UPDATE record missing ID: {}", error);
                 ctx.errors.push(error);
             }
         }
-
-        // Replace records with prepared versions
-        ctx.records = prepared_records;
 
         tracing::info!(
             "UPDATE data preparation completed: {}/{} successful",

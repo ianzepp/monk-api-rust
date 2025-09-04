@@ -7,7 +7,6 @@ use uuid::Uuid;
 use crate::observer::traits::{Observer, DatabaseObserver, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
-use crate::observer::stateful_record::{StatefulRecord, SqlOperation};
 use crate::database::manager::DatabaseManager;
 
 /// Ring 5: Update SQL Executor - handles UPDATE operations only
@@ -47,13 +46,9 @@ impl DatabaseObserver for UpdateSqlExecutor {
         let mut results = Vec::new();
         let mut successful_operations = 0;
         
-        // Process each StatefulRecord
+        // Process each Record
         for record in &ctx.records {
-            // Generate SQL operation from record state
-            let sql_op = record.to_sql_operation(&ctx.schema_name)
-                .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-            
-            match self.execute_update_operation(&pool, sql_op).await {
+            match self.execute_update_record(&pool, record, &ctx.schema_name).await {
                 Ok(result) => {
                     results.push(result);
                     successful_operations += 1;
@@ -61,7 +56,7 @@ impl DatabaseObserver for UpdateSqlExecutor {
                 Err(error) => {
                     tracing::error!(
                         "UPDATE operation failed for record {:?}: {}",
-                        record.id, error
+                        record.id(), error
                     );
                     ctx.errors.push(error);
                 }
@@ -81,52 +76,63 @@ impl DatabaseObserver for UpdateSqlExecutor {
 }
 
 impl UpdateSqlExecutor {
-    /// Execute UPDATE operation
-    async fn execute_update_operation(&self, pool: &PgPool, sql_op: SqlOperation) -> Result<Value, ObserverError> {
-        match sql_op {
-            SqlOperation::Update { table, id, fields } => {
-                if fields.is_empty() {
-                    tracing::debug!("No changes for record {}, skipping update", id);
-                    // Return a minimal record with just the ID
-                    return Ok(serde_json::json!({ "id": id.to_string() }));
-                }
-                
-                tracing::debug!("Updating record {} in {}: fields={:?}", id, table, fields.keys().collect::<Vec<_>>());
-                
-                // Build SET clause for only changed fields
-                let set_clauses: Vec<String> = fields.keys()
-                    .enumerate()
-                    .map(|(i, field)| format!("\"{}\" = ${}", field, i + 1))
-                    .collect();
-                
-                let values: Vec<Value> = fields.values().cloned().collect();
-                
-                let query = format!(
-                    "UPDATE \"{}\" SET {}, updated_at = NOW() WHERE id = ${} RETURNING *",
-                    table, set_clauses.join(", "), values.len() + 1
-                );
-                
-                let mut q = sqlx::query(&query);
-                for value in &values {
-                    q = bind_param(q, value);
-                }
-                q = q.bind(id.to_string());
-                
-                let row = q.fetch_one(pool).await
-                    .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-                
-                self.row_to_json(row)
-            }
-            SqlOperation::NoOp => {
-                tracing::debug!("No-op SQL operation for UPDATE");
-                Ok(serde_json::json!({}))
-            }
-            _ => {
-                Err(ObserverError::DatabaseError(
-                    format!("UpdateSqlExecutor received unexpected operation: {:?}", sql_op)
-                ))
-            }
+    /// Execute UPDATE operation for a Record
+    async fn execute_update_record(
+        &self, 
+        pool: &PgPool, 
+        record: &crate::database::record::Record, 
+        table_name: &str
+    ) -> Result<Value, ObserverError> {
+        let record_id = record.id().ok_or_else(|| {
+            ObserverError::DatabaseError("UPDATE operation requires record ID".to_string())
+        })?;
+        
+        // Get only changed fields for the update
+        let changes = record.changes();
+        
+        if changes.is_empty() {
+            tracing::debug!("No changes for record {}, skipping update", record_id);
+            // Return the current record state
+            return Ok(record.to_json());
         }
+        
+        let changed_fields: Vec<(&String, &crate::database::record::FieldChange)> = changes.iter()
+            .filter(|(_, change)| matches!(change.change_type, crate::database::record::ChangeType::Modified | crate::database::record::ChangeType::Added))
+            .collect();
+        
+        if changed_fields.is_empty() {
+            tracing::debug!("No meaningful changes for record {}, skipping update", record_id);
+            return Ok(record.to_json());
+        }
+        
+        tracing::debug!("Updating record {} in {}: fields={:?}", 
+                       record_id, table_name, changed_fields.iter().map(|(k, _)| k).collect::<Vec<_>>());
+        
+        // Build SET clause for only changed fields
+        let set_clauses: Vec<String> = changed_fields.iter()
+            .enumerate()
+            .map(|(i, (field, _))| format!("\"{}\" = ${}", field, i + 1))
+            .collect();
+        
+        let values: Vec<Value> = changed_fields.iter()
+            .filter_map(|(_, change)| change.new_value.clone())
+            .collect();
+        
+        let query = format!(
+            "UPDATE \"{}\" SET {}, updated_at = NOW() WHERE id = ${} RETURNING *",
+            table_name, set_clauses.join(", "), values.len() + 1
+        );
+        
+        let mut q = sqlx::query(&query);
+        for value in &values {
+            q = bind_param(q, value);
+        }
+        q = q.bind(record_id.to_string());
+        
+        let row = q.fetch_one(pool).await
+            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        
+        self.row_to_json(row)
     }
     
     /// Convert database row to JSON

@@ -9,32 +9,31 @@ use serde_json::Value;
 use crate::observer::traits::{ObserverRing, Operation, ObserverBox};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::{ObserverError, ObserverResult};
-use crate::observer::stateful_record::StatefulRecord;
 use crate::filter::FilterData;
 
-/// Result type for pipeline-level operations that preserves StatefulRecord context
+/// Result type for pipeline-level operations that preserves Record context
 /// Used for internal pipeline-to-pipeline operations
 #[derive(Debug)]
-pub struct PipelineStatefulResult {
+pub struct PipelineRecordResult {
     pub success: bool,
-    pub records: Vec<StatefulRecord>,
+    pub records: Vec<crate::database::record::Record>,
     pub errors: Vec<ObserverError>,
     pub warnings: Vec<String>,
     pub execution_time: Duration,
     pub rings_executed: Vec<ObserverRing>,
 }
 
-impl PipelineStatefulResult {
-    /// Convert from ObserverResult, reconstructing StatefulRecords from JSON
+impl PipelineRecordResult {
+    /// Convert from ObserverResult, reconstructing Records from JSON
     pub fn from_observer_result(result: ObserverResult) -> Self {
-        // TODO: In practice, we need to modify ObserverContext to preserve StatefulRecords
-        // For now, create empty StatefulRecords as placeholder
         let records = if let Some(json_results) = result.result {
             json_results.into_iter()
                 .filter_map(|value| {
                     if let Value::Object(map) = value {
-                        // Try to reconstruct StatefulRecord from JSON
-                        Some(StatefulRecord::from_select_result(map))
+                        // Reconstruct Record from JSON
+                        Some(crate::database::record::Record::from_sql_data(
+                            map.into_iter().collect()
+                        ))
                     } else {
                         None
                     }
@@ -88,12 +87,12 @@ impl ObserverPipeline {
     }
     
     /// Execute observer pipeline for CRUD operations (CREATE, UPDATE, DELETE, REVERT)
-    /// Returns JSON results for Repository layer conversion
+    /// Now works directly with Records - no more conversion overhead!
     pub async fn execute_crud(
         &self,
         operation: Operation,
         schema_name: String,
-        records: Vec<StatefulRecord>,
+        records: Vec<crate::database::record::Record>,
     ) -> Result<ObserverResult, ObserverError> {
         let start_time = Instant::now();
         
@@ -125,13 +124,13 @@ impl ObserverPipeline {
         
         let total_time = start_time.elapsed();
         
-        // Extract results from StatefulRecords
+        // Extract results from Records
         let result_data: Vec<Value> = if ctx.result.is_some() {
             ctx.result.unwrap()
         } else {
-            // If no result from Ring 5, extract from StatefulRecords
+            // If no result from Ring 5, extract from Records
             ctx.records.into_iter()
-                .map(|record| Value::Object(record.modified))
+                .map(|record| record.to_json())
                 .collect()
         };
         
@@ -175,12 +174,12 @@ impl ObserverPipeline {
         }
         
         // Phase 2: Database Execution (Ring 5)
-        // Creates StatefulRecords from query results
+        // Creates Records from query results
         ctx.current_ring = Some(ObserverRing::Database);
         self.execute_ring(ObserverRing::Database, &mut ctx).await?;
         
         // Phase 3: Result Processing (Rings 6+)
-        // Now StatefulRecords are available for processing
+        // Now Records are available for processing
         for &ring in relevant_rings.iter().filter(|&&r| r.is_synchronous() && (r as u8) >= 6) {
             ctx.current_ring = Some(ring);
             self.execute_ring(ring, &mut ctx).await?;
@@ -190,12 +189,12 @@ impl ObserverPipeline {
         // Execute in background, don't block response
         self.execute_async_rings(&relevant_rings, &ctx).await;
         
-        // Convert StatefulRecords back to JSON for API response
+        // Convert Records back to JSON for API response
         let result_data: Vec<Value> = if let Some(result) = ctx.result {
             result
         } else {
             ctx.records.into_iter()
-                .map(|record| Value::Object(record.modified))
+                .map(|record| record.to_json())
                 .collect()
         };
         
@@ -203,42 +202,106 @@ impl ObserverPipeline {
     }
 
     // ========================================
-    // Pipeline-level bulk methods (StatefulRecord in/out)
+    // Repository-level methods (Record in/out) - handles all conversion internally
     // ========================================
 
-    /// Create multiple records - StatefulRecord in, StatefulRecord out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn create_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
+    /// Create multiple records - Record in, Record out
+    /// For Repository usage - now works directly with Records!
+    pub async fn create_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+        // Execute pipeline directly with Records - no conversion needed!
         let result = self.execute_crud(Operation::Create, schema_name, records).await?;
-        Ok(PipelineStatefulResult::from_observer_result(result))
+        
+        // Handle errors and extract Records
+        self.handle_pipeline_result(result)
     }
 
-    /// Update multiple records - StatefulRecord in, StatefulRecord out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn update_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
+    /// Update multiple records - Record in, Record out  
+    /// For Repository usage - now works directly with Records!
+    pub async fn update_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+        // Execute pipeline directly with Records - no conversion needed!
         let result = self.execute_crud(Operation::Update, schema_name, records).await?;
-        Ok(PipelineStatefulResult::from_observer_result(result))
+        
+        // Handle errors and extract Records
+        self.handle_pipeline_result(result)
     }
 
-    /// Delete multiple records - StatefulRecord in, StatefulRecord out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn delete_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
-        let result = self.execute_crud(Operation::Delete, schema_name, records).await?;
-        Ok(PipelineStatefulResult::from_observer_result(result))
-    }
-
-    /// Revert multiple records - StatefulRecord in, StatefulRecord out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn revert_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
-        let result = self.execute_crud(Operation::Revert, schema_name, records).await?;
-        Ok(PipelineStatefulResult::from_observer_result(result))
-    }
-
-    /// Select records with filter - returns StatefulRecord out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn select_any(&self, schema_name: String, filter_data: FilterData) -> Result<PipelineStatefulResult, ObserverError> {
+    /// Select records with filter - Record out
+    /// For Repository usage - now works directly with Records!
+    pub async fn select_any_records(&self, schema_name: String, filter_data: FilterData) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+        // Execute pipeline - no conversion needed!
         let result = self.execute_select(schema_name, filter_data).await?;
-        Ok(PipelineStatefulResult::from_observer_result(result))
+        
+        // Handle errors and extract Records
+        self.handle_pipeline_result(result)
+    }
+
+    // ========================================
+    // Pipeline-level bulk methods (Record in/out)
+    // ========================================
+
+    /// Create multiple records - Record in, Record out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn create_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Create, schema_name, records).await?;
+        Ok(PipelineRecordResult::from_observer_result(result))
+    }
+
+    /// Update multiple records - Record in, Record out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn update_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Update, schema_name, records).await?;
+        Ok(PipelineRecordResult::from_observer_result(result))
+    }
+
+    /// Delete multiple records - Record in, Record out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn delete_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Delete, schema_name, records).await?;
+        Ok(PipelineRecordResult::from_observer_result(result))
+    }
+
+    /// Revert multiple records - Record in, Record out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn revert_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Revert, schema_name, records).await?;
+        Ok(PipelineRecordResult::from_observer_result(result))
+    }
+
+    /// Select records with filter - returns Record out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn select_any(&self, schema_name: String, filter_data: FilterData) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_select(schema_name, filter_data).await?;
+        Ok(PipelineRecordResult::from_observer_result(result))
+    }
+
+
+    /// Handle pipeline result - check for errors and convert to Records
+    fn handle_pipeline_result(&self, result: ObserverResult) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+        // Check for pipeline errors
+        if !result.success {
+            return Err(ObserverError::ValidationError(
+                format!("Observer pipeline validation failed: {} errors", result.errors.len())
+            ));
+        }
+
+        // Convert JSON results to Records
+        let json_results = result.result.unwrap_or_default();
+        let mut records = Vec::new();
+        
+        for value in json_results {
+            if let Value::Object(map) = value {
+                let record = crate::database::record::Record::from_sql_data(
+                    map.into_iter().collect()
+                );
+                records.push(record);
+            } else {
+                return Err(ObserverError::ValidationError(
+                    "Invalid result format from pipeline - expected JSON object".to_string()
+                ));
+            }
+        }
+        
+        Ok(records)
     }
 
     /// Execute observers in a specific ring

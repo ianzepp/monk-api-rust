@@ -7,7 +7,6 @@ use uuid::Uuid;
 use crate::observer::traits::{Observer, DatabaseObserver, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
-use crate::observer::stateful_record::{StatefulRecord, SqlOperation};
 use crate::database::manager::DatabaseManager;
 
 /// Ring 5: Delete SQL Executor - handles soft DELETE operations only
@@ -47,13 +46,9 @@ impl DatabaseObserver for DeleteSqlExecutor {
         let mut results = Vec::new();
         let mut successful_operations = 0;
         
-        // Process each StatefulRecord
+        // Process each Record
         for record in &ctx.records {
-            // Generate SQL operation from record state
-            let sql_op = record.to_sql_operation(&ctx.schema_name)
-                .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-            
-            match self.execute_delete_operation(&pool, sql_op).await {
+            match self.execute_delete_record(&pool, record, &ctx.schema_name).await {
                 Ok(result) => {
                     results.push(result);
                     successful_operations += 1;
@@ -61,7 +56,7 @@ impl DatabaseObserver for DeleteSqlExecutor {
                 Err(error) => {
                     tracing::error!(
                         "DELETE operation failed for record {:?}: {}",
-                        record.id, error
+                        record.id(), error
                     );
                     ctx.errors.push(error);
                 }
@@ -81,35 +76,31 @@ impl DatabaseObserver for DeleteSqlExecutor {
 }
 
 impl DeleteSqlExecutor {
-    /// Execute soft DELETE operation
-    async fn execute_delete_operation(&self, pool: &PgPool, sql_op: SqlOperation) -> Result<Value, ObserverError> {
-        match sql_op {
-            SqlOperation::SoftDelete { table, id } => {
-                tracing::debug!("Soft deleting record {} from {}", id, table);
-                
-                let query = format!(
-                    "UPDATE \"{}\" SET trashed_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING *",
-                    table
-                );
-                
-                let row = sqlx::query(&query)
-                    .bind(id.to_string())
-                    .fetch_one(pool)
-                    .await
-                    .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-                
-                self.row_to_json(row)
-            }
-            SqlOperation::NoOp => {
-                tracing::debug!("No-op SQL operation for DELETE");
-                Ok(serde_json::json!({}))
-            }
-            _ => {
-                Err(ObserverError::DatabaseError(
-                    format!("DeleteSqlExecutor received unexpected operation: {:?}", sql_op)
-                ))
-            }
-        }
+    /// Execute soft DELETE operation for a Record
+    async fn execute_delete_record(
+        &self, 
+        pool: &PgPool, 
+        record: &crate::database::record::Record, 
+        table_name: &str
+    ) -> Result<Value, ObserverError> {
+        let record_id = record.id().ok_or_else(|| {
+            ObserverError::DatabaseError("DELETE operation requires record ID".to_string())
+        })?;
+        
+        tracing::debug!("Soft deleting record {} from {}", record_id, table_name);
+        
+        let query = format!(
+            "UPDATE \"{}\" SET trashed_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING *",
+            table_name
+        );
+        
+        let row = sqlx::query(&query)
+            .bind(record_id.to_string())
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        
+        self.row_to_json(row)
     }
     
     /// Convert database row to JSON
