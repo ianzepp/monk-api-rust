@@ -85,16 +85,32 @@ where
     // CREATE Operations
     // ========================================
 
-    /// Create a single record from StatefulRecord
-    pub async fn create_one(&self, record: crate::observer::stateful_record::StatefulRecord) -> Result<T, DatabaseError> {
+    /// Create a single record from typed record
+    pub async fn create_one(&self, record: T) -> Result<T, DatabaseError> {
         let results = self.create_all(vec![record]).await?;
         results.into_iter().next()
             .ok_or_else(|| DatabaseError::QueryError("create_one produced no results".to_string()))
     }
 
-    /// Create multiple records from StatefulRecord array  
-    pub async fn create_all(&self, records: Vec<crate::observer::stateful_record::StatefulRecord>) -> Result<Vec<T>, DatabaseError> {
+    /// Create multiple records from typed record array  
+    pub async fn create_all(&self, records: Vec<T>) -> Result<Vec<T>, DatabaseError> {
         use crate::observer::Operation;
+        use crate::observer::stateful_record::{StatefulRecord, RecordOperation};
+        
+        // Convert T instances to StatefulRecord for pipeline processing
+        let mut stateful_records = Vec::new();
+        for record in records {
+            // Serialize T to JSON for StatefulRecord
+            let record_json = serde_json::to_value(record)
+                .map_err(|e| DatabaseError::QueryError(format!("Failed to serialize record for pipeline: {}", e)))?;
+            
+            if let serde_json::Value::Object(record_map) = record_json {
+                let stateful_record = StatefulRecord::new(record_map, RecordOperation::Create);
+                stateful_records.push(stateful_record);
+            } else {
+                return Err(DatabaseError::QueryError("Record must serialize to JSON object".to_string()));
+            }
+        }
         
         // Create observer pipeline with all SQL executors (REST API requirement)
         let pipeline = Self::create_pipeline();
@@ -103,7 +119,7 @@ where
         let observer_result = pipeline.execute_crud(
             Operation::Create,
             self.table_name.clone(),
-            records,
+            stateful_records,
         ).await?;
         
         if !observer_result.success {
@@ -214,16 +230,70 @@ where
 
     /// Update records matching filter criteria
     pub async fn update_any(&self, filter: FilterData, changes: std::collections::HashMap<String, serde_json::Value>) -> Result<Vec<T>, DatabaseError> {
-        // 1. Find all records matching the filter
-        let records = self.select_any(filter).await?;
-        
-        if records.is_empty() {
+        if changes.is_empty() {
             return Ok(vec![]);
         }
 
-        // TODO: Extract IDs from T instances and delegate to update_all
-        // This requires T to have an ID field we can access
-        unimplemented!("update_any requires ID extraction from generic type T")
+        // Create observer pipeline with all SQL executors (REST API requirement)
+        let pipeline = Self::create_pipeline();
+
+        // 1. SELECT at pipeline level to get StatefulRecords (no conversion to T)
+        let select_result = pipeline.select_any(self.table_name.clone(), filter).await
+            .map_err(|e| DatabaseError::QueryError(format!("Pipeline SELECT failed: {}", e)))?;
+
+        if !select_result.success {
+            return Err(DatabaseError::QueryError(
+                format!("SELECT pipeline validation failed: {} errors", select_result.errors.len())
+            ));
+        }
+
+        if select_result.records.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 2. Apply changes to existing StatefulRecords in-memory (no database queries)
+        let changes_map: serde_json::Map<String, serde_json::Value> = changes.into_iter().collect();
+        let updated_records: Vec<crate::observer::stateful_record::StatefulRecord> = select_result.records
+            .into_iter()
+            .map(|record| {
+                // Create new StatefulRecord with existing data + changes
+                use crate::observer::stateful_record::{StatefulRecord, RecordOperation};
+                
+                // Get original data from StatefulRecord
+                let original_data = record.original.unwrap_or(record.modified);
+                
+                // Create updated StatefulRecord with changes
+                StatefulRecord::existing(
+                    original_data,
+                    Some(changes_map.clone()),
+                    RecordOperation::Update
+                )
+            })
+            .collect();
+
+        // 3. UPDATE at pipeline level with pre-loaded StatefulRecords (skips Ring 0 data loading)
+        let update_result = pipeline.update_all(self.table_name.clone(), updated_records).await
+            .map_err(|e| DatabaseError::QueryError(format!("Pipeline UPDATE failed: {}", e)))?;
+
+        if !update_result.success {
+            return Err(DatabaseError::QueryError(
+                format!("UPDATE pipeline validation failed: {} errors", update_result.errors.len())
+            ));
+        }
+
+        // 4. Convert StatefulRecord results back to T
+        let results: Vec<serde_json::Value> = update_result.records
+            .into_iter()
+            .map(|record| serde_json::Value::Object(record.modified))
+            .collect();
+
+        let typed_results: Result<Vec<T>, _> = results.into_iter()
+            .map(|value| serde_json::from_value(value))
+            .collect();
+
+        typed_results.map_err(|e| DatabaseError::QueryError(
+            format!("Failed to deserialize results: {}", e)
+        ))
     }
 
     /// Update multiple records by ID array

@@ -2,7 +2,7 @@
 // Based on superior Rust design from OBSERVER_SYSTEM.md
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use serde_json::Value;
 
@@ -11,6 +11,49 @@ use crate::observer::context::ObserverContext;
 use crate::observer::error::{ObserverError, ObserverResult};
 use crate::observer::stateful_record::StatefulRecord;
 use crate::filter::FilterData;
+
+/// Result type for pipeline-level operations that preserves StatefulRecord context
+/// Used for internal pipeline-to-pipeline operations
+#[derive(Debug)]
+pub struct PipelineStatefulResult {
+    pub success: bool,
+    pub records: Vec<StatefulRecord>,
+    pub errors: Vec<ObserverError>,
+    pub warnings: Vec<String>,
+    pub execution_time: Duration,
+    pub rings_executed: Vec<ObserverRing>,
+}
+
+impl PipelineStatefulResult {
+    /// Convert from ObserverResult, reconstructing StatefulRecords from JSON
+    pub fn from_observer_result(result: ObserverResult) -> Self {
+        // TODO: In practice, we need to modify ObserverContext to preserve StatefulRecords
+        // For now, create empty StatefulRecords as placeholder
+        let records = if let Some(json_results) = result.result {
+            json_results.into_iter()
+                .filter_map(|value| {
+                    if let Value::Object(map) = value {
+                        // Try to reconstruct StatefulRecord from JSON
+                        Some(StatefulRecord::from_select_result(map))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        Self {
+            success: result.success,
+            records,
+            errors: result.errors,
+            warnings: result.warnings,
+            execution_time: result.execution_time,
+            rings_executed: result.rings_executed,
+        }
+    }
+}
 
 /// High-performance observer pipeline with compile-time registration
 /// Executes observers in ring order with selective execution and async optimization
@@ -45,6 +88,7 @@ impl ObserverPipeline {
     }
     
     /// Execute observer pipeline for CRUD operations (CREATE, UPDATE, DELETE, REVERT)
+    /// Returns JSON results for Repository layer conversion
     pub async fn execute_crud(
         &self,
         operation: Operation,
@@ -157,7 +201,46 @@ impl ObserverPipeline {
         
         Ok(ObserverResult::success(result_data, start_time.elapsed(), relevant_rings))
     }
-    
+
+    // ========================================
+    // Pipeline-level bulk methods (StatefulRecord in/out)
+    // ========================================
+
+    /// Create multiple records - StatefulRecord in, StatefulRecord out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn create_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
+        let result = self.execute_crud(Operation::Create, schema_name, records).await?;
+        Ok(PipelineStatefulResult::from_observer_result(result))
+    }
+
+    /// Update multiple records - StatefulRecord in, StatefulRecord out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn update_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
+        let result = self.execute_crud(Operation::Update, schema_name, records).await?;
+        Ok(PipelineStatefulResult::from_observer_result(result))
+    }
+
+    /// Delete multiple records - StatefulRecord in, StatefulRecord out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn delete_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
+        let result = self.execute_crud(Operation::Delete, schema_name, records).await?;
+        Ok(PipelineStatefulResult::from_observer_result(result))
+    }
+
+    /// Revert multiple records - StatefulRecord in, StatefulRecord out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn revert_all(&self, schema_name: String, records: Vec<StatefulRecord>) -> Result<PipelineStatefulResult, ObserverError> {
+        let result = self.execute_crud(Operation::Revert, schema_name, records).await?;
+        Ok(PipelineStatefulResult::from_observer_result(result))
+    }
+
+    /// Select records with filter - returns StatefulRecord out
+    /// For internal pipeline-to-pipeline operations
+    pub async fn select_any(&self, schema_name: String, filter_data: FilterData) -> Result<PipelineStatefulResult, ObserverError> {
+        let result = self.execute_select(schema_name, filter_data).await?;
+        Ok(PipelineStatefulResult::from_observer_result(result))
+    }
+
     /// Execute observers in a specific ring
     async fn execute_ring(&self, ring: ObserverRing, ctx: &mut ObserverContext) -> Result<bool, ObserverError> {
         let observers = match self.observers.get(&ring) {
