@@ -87,6 +87,9 @@ cargo run
 # Basic server health check
 curl http://localhost:3000/health
 
+# You can override the port with MONK_API_PORT or PORT
+MONK_API_PORT=4000 cargo run
+
 # API root information
 curl http://localhost:3000/
 

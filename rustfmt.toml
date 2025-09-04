@@ -1,0 +1,12 @@
+max_width = 100
+use_small_heuristics = "Max"
+newline_style = "Unix"
+wrap_comments = true
+comment_width = 100
+format_strings = true
+normalize_doc_attributes = true
+reorder_imports = true
+group_imports = "StdExternalCrate"
+imports_granularity = "Crate"
+blank_lines_upper_bound = 2
+
