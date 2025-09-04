@@ -2,7 +2,8 @@ use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::utils::{generate_jwt_token, validate_jwt_token};
+use crate::auth::{generate_jwt, Claims};
+use crate::database::service::{find_tenant_by_name, find_user_by_auth};
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -15,21 +16,21 @@ pub struct RefreshRequest {
 }
 
 /// POST /auth/login/:tenant/:user - Authenticate user and receive JWT token
-/// 
+///
 /// This is the primary authentication endpoint that validates user credentials
 /// and returns a JWT token for accessing protected APIs.
-/// 
+///
 /// URL Parameters:
 /// - tenant: Tenant name (from tenants.name column in monk_main DB)
 /// - user: User auth identifier (from users.auth column in tenant DB)
-/// 
+///
 /// Expected Input:
 /// ```json
 /// {
 ///   "password": "string"    // Required: User password
 /// }
 /// ```
-/// 
+///
 /// Expected Output (Success):
 /// ```json
 /// {
@@ -48,62 +49,130 @@ pub struct RefreshRequest {
 /// }
 /// ```
 pub async fn login(
-    Path((tenant, user)): Path<(String, String)>,
+    Path((tenant_name, user_auth)): Path<(String, String)>,
     Json(_payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    // TODO: Validate tenant exists and is active using tenant parameter
-    // TODO: Extract user auth identifier from user parameter
-    // TODO: Query tenant database for user credentials
-    // TODO: Validate password/authentication method
-    // TODO: Generate JWT token with user claims using utils::generate_jwt_token
-    // TODO: Return token + user information
-    
-    // Placeholder response matching expected API format
+    // 1. Check if tenant exists
+    let tenant = match find_tenant_by_name(&tenant_name).await {
+        Ok(Some(tenant)) => tenant,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "success": false,
+                    "error": "Tenant not found",
+                    "error_code": "TENANT_NOT_FOUND"
+                })),
+            );
+        }
+        Err(e) => {
+            tracing::error!("Database error checking tenant {}: {}", tenant_name, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": "Database error",
+                    "error_code": "DATABASE_ERROR"
+                })),
+            );
+        }
+    };
+
+    // 2. Check if user exists in tenant database
+    let user = match find_user_by_auth(&tenant.database, &user_auth).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "success": false,
+                    "error": "User not found",
+                    "error_code": "USER_NOT_FOUND"
+                })),
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                "Database error checking user {} in {}: {}",
+                user_auth,
+                tenant.database,
+                e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": "Database error",
+                    "error_code": "DATABASE_ERROR"
+                })),
+            );
+        }
+    };
+
+    // 3. Generate JWT token
+    let claims = Claims::new(
+        tenant.name.clone(),
+        user.auth.clone(),
+        tenant.database.clone(),
+        user.access.clone(),
+        user.id,
+    );
+
+    let token = match generate_jwt(claims) {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!("JWT generation error: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": "Token generation failed",
+                    "error_code": "JWT_ERROR"
+                })),
+            );
+        }
+    };
+
+    // 4. Return success response
+    let expires_in = crate::config::config().security.jwt_expiry_hours * 3600; // Convert to seconds
+
     (
-        StatusCode::NOT_IMPLEMENTED,
+        StatusCode::OK,
         Json(json!({
-            "success": false,
-            "error": "Login endpoint not yet implemented",
-            "message": "This will authenticate user credentials and return JWT token",
-            "expected_input": {
-                "tenant": "string (required)",
-                "username": "string (required)"
-            },
-            "planned_response": {
-                "success": true,
-                "data": {
-                    "token": "eyJhbGciOiJIUzI1NiI...",
-                    "user": {
-                        "id": "user_uuid",
-                        "username": "admin", 
-                        "tenant": "my-tenant",
-                        "database": "tenant_abc123",
-                        "access": "full"
-                    },
-                    "expires_in": 3600
-                }
+            "success": true,
+            "data": {
+                "token": token,
+                "user": {
+                    "id": user.id,
+                    "database": tenant.database,
+                    "tenant": tenant.name,
+                    "auth": user.auth,
+                    "name": user.name,
+                    "access": user.access
+                },
+                "expires_in": expires_in
             }
         })),
     )
 }
 
 /// POST /auth/refresh/:tenant/:user - Refresh expired JWT token
-/// 
+///
 /// Allows clients to refresh their JWT tokens without requiring full
 /// re-authentication. Accepts an existing JWT token (which may be expired)
 /// and returns a new token with extended expiration.
-/// 
+///
 /// URL Parameters:
 /// - tenant: Tenant name (from tenants.name column in monk_main DB)
 /// - user: User auth identifier (from users.auth column in tenant DB)
-/// 
+///
 /// Expected Input:
 /// ```json
 /// {
 ///   "token": "string"    // Required: Current JWT token (may be expired)
 /// }
 /// ```
-/// 
+///
 /// Expected Output (Success):
 /// ```json
 /// {
@@ -125,7 +194,7 @@ pub async fn refresh(
     // TODO: Extract user claims from existing token
     // TODO: Generate new JWT token with same claims but new expiration
     // TODO: Return new token to client
-    
+
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(json!({
@@ -173,7 +242,7 @@ LOGIN FLOW:
 
 4. **Response Formation**:
    - Return JWT token in standardized format
-   - Include user information for client-side use  
+   - Include user information for client-side use
    - Set appropriate cache headers
    - Log successful authentication for audit
 
@@ -183,7 +252,7 @@ REFRESH FLOW:
    // Parse JWT even if expired (skip expiration validation)
    let claims = decode::<JWTClaims>(
        &token,
-       &key, 
+       &key,
        &Validation { validate_exp: false, ..Default::default() }
    )?;
    ```
@@ -201,7 +270,7 @@ REFRESH FLOW:
 
 4. **New Token Generation**:
    - Preserve all original claims (user, tenant, permissions)
-   - Update expiration timestamp  
+   - Update expiration timestamp
    - Generate new JWT with same signing key
 
 ERROR HANDLING:

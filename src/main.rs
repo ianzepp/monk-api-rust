@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 mod api;
+mod auth;
 mod config;
 mod database;
 mod filter;

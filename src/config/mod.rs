@@ -53,6 +53,7 @@ pub struct SecurityConfig {
     pub require_https: bool,
     pub enable_audit_logging: bool,
     pub jwt_expiry_hours: u64,
+    pub jwt_secret: String,
 }
 
 impl AppConfig {
@@ -143,6 +144,9 @@ impl AppConfig {
         if let Ok(v) = env::var("SECURITY_JWT_EXPIRY_HOURS") {
             self.security.jwt_expiry_hours = v.parse().unwrap_or(self.security.jwt_expiry_hours);
         }
+        if let Ok(v) = env::var("SECURITY_JWT_SECRET") {
+            self.security.jwt_secret = v;
+        }
 
         self
     }
@@ -178,6 +182,7 @@ impl AppConfig {
                 require_https: false,
                 enable_audit_logging: false,
                 jwt_expiry_hours: 24 * 7, // 1 week
+                jwt_secret: "dev-secret-key-change-in-production".to_string(),
             },
         }
     }
@@ -213,6 +218,7 @@ impl AppConfig {
                 require_https: true,
                 enable_audit_logging: true,
                 jwt_expiry_hours: 24,
+                jwt_secret: "staging-secret-set-via-env".to_string(),
             },
         }
     }
@@ -248,6 +254,7 @@ impl AppConfig {
                 require_https: true,
                 enable_audit_logging: true,
                 jwt_expiry_hours: 4,
+                jwt_secret: "production-secret-must-set-via-env".to_string(),
             },
         }
     }
