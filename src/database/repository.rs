@@ -15,7 +15,7 @@ pub struct Repository<T> {
 
 impl<T> Repository<T>
 where
-    T: for<'r> FromRow<'r, PgRow> + Send + Unpin + Serialize,
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin + Serialize + serde::de::DeserializeOwned,
 {
     pub fn new(table_name: impl Into<String>, pool: PgPool) -> Self {
         Self {
@@ -84,15 +84,34 @@ where
 
     /// Create multiple records from StatefulRecord array  
     pub async fn create_all(&self, records: Vec<crate::observer::stateful_record::StatefulRecord>) -> Result<Vec<T>, DatabaseError> {
-        // TODO: Implement observer pipeline integration
-        // This should:
-        // 1. Run pre-create observers on StatefulRecord instances
-        // 2. Generate SQL operations from StatefulRecord.to_sql_operation()
-        // 3. Execute SQL in transaction
-        // 4. Run post-create observers
-        // 5. Return created records as T instances
+        use crate::observer::{ObserverPipeline, SqlExecutor, Operation};
         
-        unimplemented!("create_all requires observer pipeline integration")
+        // Create observer pipeline with minimal Ring 5 database observer
+        let mut pipeline = ObserverPipeline::new();
+        pipeline.register_observer(crate::observer::traits::ObserverBox::Database(Box::new(SqlExecutor::default())));
+        
+        // Execute through observer pipeline
+        let observer_result = pipeline.execute_crud(
+            Operation::Create,
+            self.table_name.clone(),
+            records,
+        ).await?;
+        
+        if !observer_result.success {
+            return Err(DatabaseError::QueryError(
+                format!("Observer pipeline validation failed: {} errors", observer_result.errors.len())
+            ));
+        }
+        
+        // Convert results back to typed records
+        let results = observer_result.result.unwrap_or_default();
+        let typed_results: Result<Vec<T>, _> = results.into_iter()
+            .map(|value| serde_json::from_value(value))
+            .collect();
+        
+        typed_results.map_err(|e| DatabaseError::QueryError(
+            format!("Failed to deserialize results: {}", e)
+        ))
     }
 
     // ========================================
@@ -108,17 +127,81 @@ where
 
     /// Update multiple records by ID
     pub async fn update_all(&self, updates: Vec<(Uuid, std::collections::HashMap<String, serde_json::Value>)>) -> Result<Vec<T>, DatabaseError> {
-        // TODO: Implement observer pipeline integration
-        // This should:
-        // 1. Fetch existing records by IDs 
-        // 2. Create StatefulRecord instances with changes
-        // 3. Run pre-update observers
-        // 4. Generate SQL operations from StatefulRecord.to_sql_operation()
-        // 5. Execute SQL in transaction
-        // 6. Run post-update observers
-        // 7. Return updated records as T instances
+        use crate::observer::{ObserverPipeline, SqlExecutor, Operation};
+        use crate::observer::stateful_record::{StatefulRecord, RecordOperation};
         
-        unimplemented!("update_all requires observer pipeline integration")
+        if updates.is_empty() {
+            return Ok(Vec::new());
+        }
+        
+        // First, fetch existing records for update operations
+        let ids: Vec<Uuid> = updates.iter().map(|(id, _)| *id).collect();
+        let existing_records = self.select_ids(ids).await?;
+        
+        // Convert to StatefulRecord instances with updates
+        let mut stateful_records = Vec::new();
+        for (update_id, changes) in updates {
+            // Find existing record
+            if let Some(existing) = existing_records.iter()
+                .find(|record| {
+                    // Assuming T can be serialized to get ID field
+                    if let Ok(value) = serde_json::to_value(record) {
+                        if let Some(id_str) = value.get("id").and_then(|v| v.as_str()) {
+                            if let Ok(record_id) = Uuid::parse_str(id_str) {
+                                return record_id == update_id;
+                            }
+                        }
+                    }
+                    false
+                }) {
+                
+                // Convert existing record to JSON
+                let existing_json = serde_json::to_value(existing)
+                    .map_err(|e| DatabaseError::QueryError(format!("Failed to serialize existing record: {}", e)))?;
+                
+                if let serde_json::Value::Object(existing_map) = existing_json {
+                    // Convert changes HashMap to serde_json::Map  
+                    let changes_map: serde_json::Map<String, serde_json::Value> = changes.into_iter().collect();
+                    
+                    let stateful_record = StatefulRecord::existing(
+                        existing_map,
+                        Some(changes_map),
+                        RecordOperation::Update
+                    );
+                    
+                    stateful_records.push(stateful_record);
+                }
+            } else {
+                return Err(DatabaseError::NotFound(format!("Record with ID {} not found", update_id)));
+            }
+        }
+        
+        // Create observer pipeline with minimal Ring 5 database observer
+        let mut pipeline = ObserverPipeline::new();
+        pipeline.register_observer(crate::observer::traits::ObserverBox::Database(Box::new(SqlExecutor::default())));
+        
+        // Execute through observer pipeline
+        let observer_result = pipeline.execute_crud(
+            Operation::Update,
+            self.table_name.clone(),
+            stateful_records,
+        ).await?;
+        
+        if !observer_result.success {
+            return Err(DatabaseError::QueryError(
+                format!("Observer pipeline validation failed: {} errors", observer_result.errors.len())
+            ));
+        }
+        
+        // Convert results back to typed records
+        let results = observer_result.result.unwrap_or_default();
+        let typed_results: Result<Vec<T>, _> = results.into_iter()
+            .map(|value| serde_json::from_value(value))
+            .collect();
+        
+        typed_results.map_err(|e| DatabaseError::QueryError(
+            format!("Failed to deserialize results: {}", e)
+        ))
     }
 
     /// Update records matching filter criteria

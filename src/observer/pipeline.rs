@@ -1,88 +1,250 @@
-use serde_json::{Value, json};
-use sqlx::Row;
+// High-performance observer pipeline with compile-time registration
+// Based on superior Rust design from OBSERVER_SYSTEM.md
 
-use crate::api::format::{record_to_api_value, MetadataOptions};
-use crate::database::manager::{DatabaseError, DatabaseManager};
-use crate::filter::{Filter, FilterData};
-use crate::observer::stateful_record::{RecordOperation, StatefulRecord};
+use std::collections::HashMap;
+use std::time::Instant;
+use tokio::time::timeout;
+use serde_json::Value;
 
-/// Execute a SELECT operation through the (future) observer pipeline.
-/// For now, this performs no-op rings and executes the enhanced query directly,
-/// returning JSON:API-formatted records using the provided metadata options.
-pub async fn execute_select(
-    schema: &str,
-    tenant_db: &str,
-    filter_data: FilterData,
-    meta_options: &MetadataOptions,
-) -> Result<Vec<Value>, DatabaseError> {
-    // PHASE 1: Query preparation (rings 0-4) - no-op for now.
-    let mut effective_filter = filter_data;
+use crate::observer::traits::{ObserverRing, Operation, ObserverBox};
+use crate::observer::context::ObserverContext;
+use crate::observer::error::{ObserverError, ObserverResult};
+use crate::observer::stateful_record::StatefulRecord;
+use crate::filter::FilterData;
 
-    // Build SQL from Filter
-    let mut filter = Filter::new(schema).map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-    filter
-        .assign(effective_filter)
-        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-    let sql_result = filter
-        .to_sql()
-        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-
-    // Wrap to return row_to_json rows like existing handlers
-    let wrapped = format!("SELECT row_to_json(t) AS row FROM ({}) t", sql_result.query);
-
-    // PHASE 2: Database execution (ring 5)
-    let pool = DatabaseManager::tenant_pool(tenant_db).await?;
-
-    let mut q = sqlx::query(&wrapped);
-    for p in sql_result.params.iter() {
-        q = bind_param(q, p);
-    }
-
-    let rows = q.fetch_all(&pool).await?;
-
-    // Convert to StatefulRecords and extract system metadata
-    let mut records = Vec::new();
-    for row in rows {
-        let v: Value = row.try_get("row").unwrap_or(Value::Null);
-        if let Value::Object(map) = v {
-            let mut rec = StatefulRecord::existing(map.clone(), None, RecordOperation::NoChange);
-            rec.extract_system_metadata();
-            records.push(rec);
-        }
-    }
-
-    // PHASE 3: Post-database result processing (rings 6-9) - no-op for now.
-
-    // Format as JSON:API resources
-    let data: Vec<Value> = records
-        .iter()
-        .map(|r| record_to_api_value(r, schema, meta_options))
-        .collect();
-
-    Ok(data)
+/// High-performance observer pipeline with compile-time registration
+/// Executes observers in ring order with selective execution and async optimization
+pub struct ObserverPipeline {
+    // Observer registry by ring
+    observers: HashMap<ObserverRing, Vec<ObserverBox>>,
+    
+    // Configuration
+    max_recursion_depth: usize,
 }
 
-fn bind_param<'q>(
-    q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
-    v: &'q Value,
-) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    match v {
-        Value::Null => {
-            let none: Option<String> = None;
-            q.bind(none)
+impl ObserverPipeline {
+    /// Create new observer pipeline with empty observer registry
+    /// Observers will be registered via register_observer()
+    pub fn new() -> Self {
+        Self {
+            observers: HashMap::new(),
+            max_recursion_depth: 3,
         }
-        Value::Bool(b) => q.bind(*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() { q.bind(i) }
-            else if let Some(u) = n.as_u64() { q.bind(u as i64) }
-            else if let Some(f) = n.as_f64() { q.bind(f) }
-            else { q.bind(n.to_string()) }
+    }
+    
+    /// Register an observer (type-safe registration)
+    pub fn register_observer(&mut self, observer: ObserverBox) {
+        let ring = observer.ring();
+        let name = observer.name();
+        self.observers
+            .entry(ring)
+            .or_insert_with(Vec::new)
+            .push(observer);
+        
+        tracing::debug!("Registered observer '{}' for ring {:?}", name, ring);
+    }
+    
+    /// Execute observer pipeline for CRUD operations (CREATE, UPDATE, DELETE, REVERT)
+    pub async fn execute_crud(
+        &self,
+        operation: Operation,
+        schema_name: String,
+        records: Vec<StatefulRecord>,
+    ) -> Result<ObserverResult, ObserverError> {
+        let start_time = Instant::now();
+        
+        let mut ctx = ObserverContext::new(operation, schema_name, records);
+        
+        // Get relevant rings for this operation (performance optimization)
+        let relevant_rings = ObserverRing::for_operation(&operation);
+        
+        tracing::info!(
+            "Observer pipeline starting: operation={:?}, schema={}, rings={:?}",
+            ctx.operation, ctx.schema_name, relevant_rings
+        );
+        
+        // Execute synchronous rings (0-6) in sequence
+        for &ring in relevant_rings.iter().filter(|&&r| r.is_synchronous()) {
+            ctx.current_ring = Some(ring);
+            
+            let should_continue = self.execute_ring(ring, &mut ctx).await?;
+            if !should_continue {
+                tracing::warn!("Observer pipeline stopped at ring {:?} due to errors", ring);
+                break;
+            }
         }
-        Value::String(s) => q.bind(s),
-        Value::Array(_arr) => {
-            // Arrays should be expanded before binding; pass-through
-            q
+        
+        // Execute asynchronous rings (7-9) in parallel after database operations
+        if ctx.result.is_some() {
+            self.execute_async_rings(&relevant_rings, &ctx).await;
         }
-        Value::Object(_) => q.bind(v.clone()), // JSONB
+        
+        let total_time = start_time.elapsed();
+        
+        // Extract results from StatefulRecords
+        let result_data: Vec<Value> = if ctx.result.is_some() {
+            ctx.result.unwrap()
+        } else {
+            // If no result from Ring 5, extract from StatefulRecords
+            ctx.records.into_iter()
+                .map(|record| Value::Object(record.modified))
+                .collect()
+        };
+        
+        Ok(ObserverResult {
+            success: ctx.errors.is_empty(),
+            result: Some(result_data),
+            errors: ctx.errors,
+            warnings: ctx.warnings,
+            execution_time: total_time,
+            rings_executed: relevant_rings,
+        })
+    }
+    
+    /// Execute observer pipeline for SELECT operations
+    pub async fn execute_select(
+        &self,
+        schema_name: String,
+        filter_data: FilterData,
+    ) -> Result<ObserverResult, ObserverError> {
+        let start_time = Instant::now();
+        
+        let mut ctx = ObserverContext::new_select(schema_name, filter_data);
+        
+        // Get relevant rings for SELECT operation
+        let relevant_rings = ObserverRing::for_operation(&Operation::Select);
+        
+        tracing::info!(
+            "Observer SELECT pipeline starting: schema={}, rings={:?}",
+            ctx.schema_name, relevant_rings
+        );
+        
+        // Phase 1: Query Preparation (Rings 0-4)
+        // Observers work with filter_data and query_metadata
+        for &ring in relevant_rings.iter().filter(|&&r| r.is_synchronous() && (r as u8) < 5) {
+            ctx.current_ring = Some(ring);
+            let should_continue = self.execute_ring(ring, &mut ctx).await?;
+            if !should_continue {
+                tracing::warn!("SELECT query preparation stopped at ring {:?} due to errors", ring);
+                return Ok(ObserverResult::failure(ctx.errors, start_time.elapsed()));
+            }
+        }
+        
+        // Phase 2: Database Execution (Ring 5)
+        // Creates StatefulRecords from query results
+        ctx.current_ring = Some(ObserverRing::Database);
+        self.execute_ring(ObserverRing::Database, &mut ctx).await?;
+        
+        // Phase 3: Result Processing (Rings 6+)
+        // Now StatefulRecords are available for processing
+        for &ring in relevant_rings.iter().filter(|&&r| r.is_synchronous() && (r as u8) >= 6) {
+            ctx.current_ring = Some(ring);
+            self.execute_ring(ring, &mut ctx).await?;
+        }
+        
+        // Phase 4: Async Processing (Rings 8-9)
+        // Execute in background, don't block response
+        self.execute_async_rings(&relevant_rings, &ctx).await;
+        
+        // Convert StatefulRecords back to JSON for API response
+        let result_data: Vec<Value> = if let Some(result) = ctx.result {
+            result
+        } else {
+            ctx.records.into_iter()
+                .map(|record| Value::Object(record.modified))
+                .collect()
+        };
+        
+        Ok(ObserverResult::success(result_data, start_time.elapsed(), relevant_rings))
+    }
+    
+    /// Execute observers in a specific ring
+    async fn execute_ring(&self, ring: ObserverRing, ctx: &mut ObserverContext) -> Result<bool, ObserverError> {
+        let observers = match self.observers.get(&ring) {
+            Some(obs) => obs,
+            None => {
+                tracing::debug!("No observers registered for ring {:?}", ring);
+                return Ok(true);
+            }
+        };
+        
+        tracing::debug!("Executing ring {:?} with {} observers", ring, observers.len());
+        
+        for observer in observers {
+            // Check if observer applies to this operation and schema
+            if !observer.applies_to_operation(ctx.operation) {
+                tracing::trace!("Observer {} skipped - doesn't apply to operation {:?}", 
+                              observer.name(), ctx.operation);
+                continue;
+            }
+            
+            if !observer.applies_to_schema(&ctx.schema_name) {
+                tracing::trace!("Observer {} skipped - doesn't apply to schema {}", 
+                              observer.name(), ctx.schema_name);
+                continue;
+            }
+            
+            let observer_start = Instant::now();
+            
+            // Execute with timeout protection
+            let result = timeout(
+                observer.timeout(),
+                observer.execute_sync(ctx)
+            ).await;
+            
+            let execution_time = observer_start.elapsed();
+            
+            match result {
+                Ok(Ok(_)) => {
+                    tracing::debug!(
+                        "Observer: {} completed successfully in {:?}",
+                        observer.name(), execution_time
+                    );
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        "Observer: {} failed in {:?}: {}",
+                        observer.name(), execution_time, error
+                    );
+                    
+                    // Collect error for user feedback
+                    ctx.errors.push(error);
+                }
+                Err(_timeout) => {
+                    let timeout_error = ObserverError::TimeoutError(
+                        format!("Observer {} timed out after {:?}", 
+                                observer.name(), observer.timeout())
+                    );
+                    
+                    tracing::error!(
+                        "Observer: {} timed out after {:?}",
+                        observer.name(), observer.timeout()
+                    );
+                    
+                    ctx.errors.push(timeout_error);
+                }
+            }
+        }
+        
+        // Stop execution on errors for pre-database rings
+        if !ctx.errors.is_empty() && ring.is_synchronous() && (ring as u8) < 5 {
+            return Ok(false);
+        }
+        
+        Ok(true)
+    }
+    
+    /// Execute asynchronous rings in parallel (non-blocking)
+    /// TODO: Implement full async execution when needed
+    async fn execute_async_rings(&self, _relevant_rings: &[ObserverRing], _ctx: &ObserverContext) {
+        tracing::debug!("Async ring execution not yet implemented - skipping");
+        // For now, skip async execution to get the framework compiling
+        // This can be implemented later when specific async observers are needed
+    }
+}
+
+impl Default for ObserverPipeline {
+    fn default() -> Self {
+        Self::new()
     }
 }

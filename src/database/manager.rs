@@ -25,6 +25,9 @@ pub enum DatabaseError {
 
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
+    
+    #[error(transparent)]
+    Observer(#[from] crate::observer::error::ObserverError),
 }
 
 /// Centralized connection pool manager for system and tenant databases

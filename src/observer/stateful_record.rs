@@ -12,7 +12,9 @@ pub enum RecordOperation {
     Update,
     Delete,
     Revert,
-    /// For SELECT results and NoOp updates
+    /// For SELECT results
+    Select,
+    /// For NoOp updates
     NoChange,
 }
 
@@ -215,6 +217,23 @@ impl Default for RecordMetadata {
 }
 
 impl StatefulRecord {
+    /// Create a StatefulRecord from SELECT results
+    /// Used when converting database results to StatefulRecord
+    pub fn from_select_result(data: Map<String, Value>) -> Self {
+        let id = data.get("id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+
+        Self {
+            id,
+            original: Some(data.clone()),
+            modified: data,
+            operation: RecordOperation::Select,
+            metadata: RecordMetadata::default(),
+            response_metadata: RecordResponseMetadata::default(),
+        }
+    }
+
     /// Create new record for CREATE operation (API-supplied data)
     pub fn create(mut data: Map<String, Value>) -> Self {
         // Ensure system metadata is extracted out of user attributes if present
@@ -539,6 +558,7 @@ for (k, v) in changes_map.into_iter() {
                     id,
                 })
             }
+            RecordOperation::Select => Ok(SqlOperation::NoOp),
             RecordOperation::NoChange => Ok(SqlOperation::NoOp),
         }
     }
