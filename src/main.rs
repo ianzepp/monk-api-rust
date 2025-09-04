@@ -50,6 +50,7 @@ fn app() -> Router {
         .merge(data_routes())
         .merge(find_routes())
         .merge(meta_routes())
+        .merge(protected_auth_routes())
         // Global middleware
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -117,6 +118,18 @@ fn meta_routes() -> Router {
                 .put(meta::schema_put)
                 .delete(meta::schema_delete),
         )
+}
+
+fn protected_auth_routes() -> Router {
+    use axum::routing::{delete, post, put};
+    use handlers::protected::auth;
+
+    Router::new()
+        // Session management for authenticated users
+        .route("/api/auth/whoami", get(auth::session_whoami))
+        .route("/api/auth/sudo", post(auth::session_sudo))
+        .route("/api/auth/session/refresh", put(auth::session_refresh))
+        .route("/api/auth/session", delete(auth::session_logout))
 }
 
 async fn root() -> axum::response::Json<Value> {
