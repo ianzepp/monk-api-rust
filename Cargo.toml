@@ -33,6 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
 thiserror = "1.0"
 url = "2.5"
+sha2 = "0.10"
 
 # CLI
 clap = { version = "4.0", features = ["derive"] }

@@ -57,6 +57,12 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: commands::meta::MetaCommands,
     },
+    
+    #[command(about = "Fixture data generation, building, and deployment")]
+    Fixture {
+        #[command(subcommand)]
+        cmd: commands::fixture::FixtureCommands,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,5 +91,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Auth { cmd } => commands::auth::handle(cmd, output_format).await,
         Commands::Data { cmd } => commands::data::handle(cmd, output_format).await,
         Commands::Meta { cmd } => commands::meta::handle(cmd, output_format).await,
+        Commands::Fixture { cmd } => commands::fixture::handle(cmd, output_format).await,
     }
 }

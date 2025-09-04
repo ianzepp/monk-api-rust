@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "title": "Project",
+  "description": "Project management schema for basic template",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Project name"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1000,
+      "description": "Project description"
+    },
+    "account_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to account owner"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["planning", "active", "completed", "cancelled"],
+      "default": "planning",
+      "description": "Project status"
+    }
+  },
+  "required": ["name", "account_id", "status"],
+  "additionalProperties": false
+}

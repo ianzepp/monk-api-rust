@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "title": "Task",
+  "description": "Task management schema for advanced template",
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Task title"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Task description"
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to project"
+    },
+    "assigned_to": {
+      "type": "string",
+      "format": "uuid", 
+      "description": "Reference to user assigned"
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "urgent"],
+      "default": "medium",
+      "description": "Task priority"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["todo", "in_progress", "review", "done"],
+      "default": "todo",
+      "description": "Task status"
+    }
+  },
+  "required": ["title", "project_id", "status"],
+  "additionalProperties": false
+}

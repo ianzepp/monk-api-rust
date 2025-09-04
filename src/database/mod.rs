@@ -4,3 +4,5 @@ pub mod repository;
 pub mod models;
 pub mod dynamic;
 pub mod service;
+
+pub use manager::{DatabaseManager, DatabaseError};

@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "title": "Account",
+  "description": "User account schema for basic template",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 100,
+      "description": "Account holder name"
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "Primary email address"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "inactive", "suspended"],
+      "default": "active",
+      "description": "Account status"
+    }
+  },
+  "required": ["name", "email", "status"],
+  "additionalProperties": false
+}

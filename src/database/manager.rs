@@ -101,6 +101,53 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Clone a database (for template-based tenant creation)
+    pub async fn clone_database(source_db: &str, target_db: &str) -> Result<(), DatabaseError> {
+        if !Self::is_valid_db_name(source_db) {
+            return Err(DatabaseError::InvalidTenantName(source_db.to_string()));
+        }
+        if !Self::is_valid_db_name(target_db) {
+            return Err(DatabaseError::InvalidTenantName(target_db.to_string()));
+        }
+
+        // Connect to postgres database for administrative operations
+        let admin_pool = Self::instance().get_admin_pool().await?;
+        
+        // Create new database from template
+        let query = format!(
+            "CREATE DATABASE {} WITH TEMPLATE {}",
+            Self::quote_identifier(target_db),
+            Self::quote_identifier(source_db)
+        );
+        
+        sqlx::query(&query).execute(&admin_pool).await?;
+        
+        info!("Cloned database {} -> {}", source_db, target_db);
+        Ok(())
+    }
+
+    /// Get administrative connection pool (connects to postgres database)
+    async fn get_admin_pool(&self) -> Result<PgPool, DatabaseError> {
+        self.get_pool("postgres").await
+    }
+
+    /// Get tenant pool - instance method for TenantService
+    pub async fn get_tenant_pool(&self, database_name: &str) -> Result<PgPool, DatabaseError> {
+        self.get_pool(database_name).await
+    }
+
+    /// Create a new DatabaseManager instance (for services that need non-static access)
+    pub fn new() -> Self {
+        Self {
+            pools: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Quote SQL identifier to prevent injection
+    fn quote_identifier(name: &str) -> String {
+        format!("\"{}\"", name.replace("\"", "\"\""))
+    }
+
     /// Close and remove all pools (e.g., on shutdown)
     pub async fn close_all() {
         let manager = Self::instance();
@@ -113,15 +160,17 @@ impl DatabaseManager {
 
     /// Validate database names to prevent injection. Accepts:
     /// - exact "monk_main"
+    /// - exact "postgres" (for admin operations)
     /// - names starting with "tenant_" followed by [a-zA-Z0-9_]+
+    /// - names starting with "template_" followed by [a-zA-Z0-9_]+
     fn is_valid_db_name(name: &str) -> bool {
-        if name == Self::SYSTEM_DB_NAME {
+        if name == Self::SYSTEM_DB_NAME || name == "postgres" {
             return true;
         }
-        if !name.starts_with("tenant_") {
-            return false;
+        if name.starts_with("tenant_") || name.starts_with("template_") {
+            return name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         }
-        name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        false
     }
 }
 

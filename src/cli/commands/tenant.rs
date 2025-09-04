@@ -3,6 +3,7 @@ use serde_json::json;
 use crate::cli::config::*;
 use crate::cli::utils::*;
 use crate::cli::OutputFormat;
+use crate::services::TenantService;
 
 #[derive(Subcommand)]
 pub enum TenantCommands {
@@ -18,10 +19,12 @@ pub enum TenantCommands {
         tenant: String,
     },
     
-    #[command(about = "Create new tenant")]
+    #[command(about = "Create new tenant from template")]
     Create {
         #[arg(help = "Tenant name")]
         name: String,
+        #[arg(long, help = "Template to clone from", default_value = "empty")]
+        template: String,
     },
     
     #[command(about = "Delete tenant")]
@@ -117,12 +120,13 @@ pub async fn handle(cmd: TenantCommands, output_format: OutputFormat) -> anyhow:
             
             Ok(())
         }
-        TenantCommands::Create { name } => {
+        TenantCommands::Create { name, template } => {
             let mut config = load_tenant_config()?;
             let env_config = load_environment_config()?;
             
+            // Check if tenant already exists in config
             if config.tenants.contains_key(&name) {
-                return Err(anyhow::anyhow!("Tenant '{}' already exists", name));
+                return Err(anyhow::anyhow!("Tenant '{}' already exists in configuration", name));
             }
             
             // Get current server for new tenant
@@ -131,20 +135,58 @@ pub async fn handle(cmd: TenantCommands, output_format: OutputFormat) -> anyhow:
                 None => return Err(anyhow::anyhow!("No current server set. Use 'monk server use <server>' first")),
             };
             
-            let tenant_info = TenantInfo::new(
+            // Create tenant service and actually create the tenant database
+            let tenant_service = TenantService::new().await
+                .map_err(|e| anyhow::anyhow!("Failed to initialize tenant service: {}", e))?;
+            
+            match output_format {
+                OutputFormat::Text => {
+                    println!("Creating tenant '{}' from template '{}'...", name, template);
+                }
+                OutputFormat::Json => {} // JSON output comes at the end
+            }
+            
+            // Create the actual tenant database from template
+            let tenant_info = tenant_service.create_tenant(&name, &template).await
+                .map_err(|e| anyhow::anyhow!("Failed to create tenant: {}", e))?;
+            
+            // Add to CLI configuration
+            let cli_tenant_info = TenantInfo::new(
                 name.clone(),
-                format!("Created via CLI"),
+                format!("Tenant created from template '{}'", template),
                 current_server,
             );
             
-            config.tenants.insert(name.clone(), tenant_info);
+            config.tenants.insert(name.clone(), cli_tenant_info);
             save_tenant_config(&config)?;
             
-            output_success(
-                &output_format,
-                &format!("Tenant '{}' created successfully", name),
-                Some(json!({ "tenant": name })),
-            )?;
+            // Output success with tenant details
+            match output_format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&json!({
+                        "success": true,
+                        "message": format!("Tenant '{}' created successfully", name),
+                        "tenant": {
+                            "name": tenant_info.name,
+                            "database": tenant_info.database,
+                            "host": tenant_info.host.unwrap_or("localhost".to_string()),
+                            "tenant_type": tenant_info.tenant_type.unwrap_or("normal".to_string()),
+                            "template_used": template,
+                            "is_active": tenant_info.is_active.unwrap_or(true),
+                            "created_at": tenant_info.created_at
+                        }
+                    }))?);
+                }
+                OutputFormat::Text => {
+                    println!("✓ Tenant '{}' created successfully", name);
+                    println!("  Database: {}", tenant_info.database);
+                    println!("  Host: {}", tenant_info.host.unwrap_or("localhost".to_string()));
+                    println!("  Template: {}", template);
+                    println!("  Type: {}", tenant_info.tenant_type.unwrap_or("normal".to_string()));
+                    println!("  Active: {}", tenant_info.is_active.unwrap_or(true));
+                    println!("  Created: {}", tenant_info.created_at.format("%Y-%m-%d %H:%M:%S"));
+                }
+            }
             
             Ok(())
         }
