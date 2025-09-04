@@ -55,15 +55,33 @@ fn app() -> Router {
 }
 
 fn data_routes() -> Router {
-    use axum::routing::post;
+    use axum::routing::{delete, patch, post, put};
     use handlers::protected::{data, find};
 
     Router::new()
-        .route("/api/data/:schema", get(data::schema_get::schema_get))
+        // Schema-level operations (collection)
+        .route(
+            "/api/data/:schema",
+            get(data::schema_get)
+                .post(data::schema_post)
+                .put(data::schema_put)
+                .patch(data::schema_patch)
+                .delete(data::schema_delete),
+        )
+        // Record-level operations (individual)
         .route(
             "/api/data/:schema/:id",
-            get(data::record_get::record_get),
+            get(data::record_get)
+                .put(data::record_put)
+                .patch(data::record_patch)
+                .delete(data::record_delete),
         )
+        // Record restore endpoint
+        .route(
+            "/api/data/:schema/:id/restore",
+            post(data::record_restore),
+        )
+        // Find endpoint (search/filter)
         .route(
             "/api/find/:schema",
             post(find::find_post::find_post),

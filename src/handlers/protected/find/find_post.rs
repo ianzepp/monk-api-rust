@@ -6,7 +6,7 @@ use sqlx::{self, Row};
 use crate::database::manager::DatabaseManager;
 use crate::filter::{Filter, FilterData};
 use crate::observer::stateful_record::{RecordOperation, StatefulRecord};
-use crate::handlers::protected::data;
+use crate::handlers::protected::data::utils;
 
 #[derive(Debug, Deserialize)]
 pub struct FindQuery {
@@ -21,13 +21,13 @@ pub async fn find_post(
     Json(filter_data): Json<FilterData>,
 ) -> impl IntoResponse {
     // Resolve tenant database
-    let tenant_db = match data::resolve_tenant_db(&query.tenant) {
+    let tenant_db = match utils::resolve_tenant_db(&query.tenant) {
         Ok(db) => db,
         Err(msg) => return (axum::http::StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg }))).into_response(),
     };
 
     // Prepare metadata options from query
-    let options = data::metadata_options_from_query(query.meta.as_deref());
+    let options = utils::metadata_options_from_query(query.meta.as_deref());
 
     // Execute via (future) observer pipeline - currently no-op observers
     match crate::observer::pipeline::execute_select(&schema, &tenant_db, filter_data, &options).await {
