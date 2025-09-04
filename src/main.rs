@@ -44,6 +44,8 @@ fn app() -> Router {
         // Public
         .route("/", get(root))
         .route("/health", get(health))
+        // Public auth routes
+        .merge(auth_routes())
         // Protected API (auth skipped for MVP)
         .merge(data_routes())
         .merge(find_routes())
@@ -51,6 +53,20 @@ fn app() -> Router {
         // Global middleware
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+}
+
+fn auth_routes() -> Router {
+    use axum::routing::{delete, post, put};
+    use handlers::public::auth;
+
+    Router::new()
+        // Session management
+        .route("/auth/login", post(auth::session_login))
+        .route("/auth/refresh", post(auth::session_refresh))
+        // User management
+        .route("/auth/register", post(auth::user_register))
+        .route("/auth/activate", put(auth::user_activate))
+        .route("/auth/user", delete(auth::user_delete))
 }
 
 fn data_routes() -> Router {
