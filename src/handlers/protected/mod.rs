@@ -9,8 +9,9 @@
 
 // Protected module declarations
 pub mod auth;  // User account management endpoints
-pub mod data;  // Dynamic data CRUD operations  
-pub mod meta;  // JSON Schema management endpoints
+pub mod data;   // Dynamic data CRUD operations  
+pub mod meta;   // JSON Schema management endpoints
+pub mod find;   // Advanced filtered finds
 
 // Re-export all handler functions for easy importing
 pub use auth::*;

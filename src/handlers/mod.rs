@@ -2,7 +2,7 @@
 // 
 // This module implements the complete security model from monk-api TypeScript:
 // Public (no auth) → Protected (JWT auth) → Elevated (root JWT auth)
-
+//
 // Declare the three security tiers
 pub mod public;    // Tier 1: No authentication required (/auth/*)
 pub mod protected; // Tier 2: JWT authentication required (/api/*)  

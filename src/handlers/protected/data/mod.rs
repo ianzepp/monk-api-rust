@@ -1,55 +1,36 @@
-// handlers/data/mod.rs - Data handler module  
-// Equivalent to monk-api/src/routes/data/routes.ts
+pub mod schema_get;
+pub mod record_get;
 
-use axum::{extract::Path, http::StatusCode, response::Json};
-use serde_json::{json, Value};
+use crate::api::format::MetadataOptions;
 
-// Handler modules - each corresponds to a route operation
-pub mod schema_get;     // GET /api/data/:schema
-pub mod schema_post;    // POST /api/data/:schema  
-pub mod schema_put;     // PUT /api/data/:schema
-pub mod schema_delete;  // DELETE /api/data/:schema
-// TODO: Add record handlers later
-// pub mod record_get;     // GET /api/data/:schema/:record
-// pub mod record_put;     // PUT /api/data/:schema/:record  
-// pub mod record_delete;  // DELETE /api/data/:schema/:record
+pub(crate) fn resolve_tenant_db(param: &Option<String>) -> Result<String, String> {
+    if let Some(db) = param { return Ok(db.clone()); }
+    if let Ok(env_db) = std::env::var("MONK_TENANT_DB") { return Ok(env_db); }
+    Err("tenant database not specified; provide ?tenant=tenant_<hash> or set MONK_TENANT_DB".to_string())
+}
 
-// Re-export handler functions - mirrors your TypeScript barrel exports
-pub use schema_get::schema_get;         // Equivalent to SchemaGet
-pub use schema_post::schema_post;       // Equivalent to SchemaPost  
-pub use schema_put::schema_put;         // Equivalent to SchemaPut
-pub use schema_delete::schema_delete;   // Equivalent to SchemaDelete
-// TODO: Re-export record handlers later
-// pub use record_get::record_get;         // Equivalent to RecordGet
-// pub use record_put::record_put;         // Equivalent to RecordPut
-// pub use record_delete::record_delete;   // Equivalent to RecordDelete
-
-/*
-DATA HANDLER MAPPING:
-
-Your TypeScript Structure:
-├── routes/data/routes.ts                           ← Barrel exports
-├── routes/data/:schema/GET.ts                     ← List records  
-├── routes/data/:schema/POST.ts                    ← Create records
-├── routes/data/:schema/PUT.ts                     ← Bulk update
-├── routes/data/:schema/DELETE.ts                  ← Bulk delete
-├── routes/data/:schema/:record/GET.ts             ← Get single record
-├── routes/data/:schema/:record/PUT.ts             ← Update single record
-└── routes/data/:schema/:record/DELETE.ts          ← Delete single record
-
-Rust Structure:
-├── handlers/data/mod.rs                           ← This file (barrel exports)
-├── handlers/data/schema_get.rs                    ← List records
-├── handlers/data/schema_post.rs                   ← Create records  
-├── handlers/data/schema_put.rs                    ← Bulk update
-├── handlers/data/schema_delete.rs                 ← Bulk delete
-├── handlers/data/record_get.rs                    ← Get single record
-├── handlers/data/record_put.rs                    ← Update single record
-└── handlers/data/record_delete.rs                 ← Delete single record
-
-Key Differences:
-- Rust files use snake_case naming
-- Path parameters extracted via Path<(String,)> or Path<(String, String)>
-- Database operations are async with compile-time query checking via SQLx
-- Error handling uses Result<T, E> instead of throwing exceptions
-*/
+pub(crate) fn metadata_options_from_query(meta_param: Option<&str>) -> MetadataOptions {
+    match meta_param {
+        None => MetadataOptions::none(),
+        Some("true") => MetadataOptions::all(),
+        Some("false") | Some("") => MetadataOptions::none(),
+        Some(param_value) => {
+            // Parse comma-separated sections or dotted fields
+            let mut opts = MetadataOptions::default();
+            let mut specific = Vec::new();
+            for part in param_value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                match part {
+                    "system" => opts.include_system = true,
+                    "computed" => opts.include_computed = true,
+                    "permissions" => opts.include_permissions = true,
+                    "relationships" => opts.include_relationships = true,
+                    "processing" => opts.include_processing = true,
+                    other if other.contains('.') => specific.push(other.to_string()),
+                    _ => {}
+                }
+            }
+            if !specific.is_empty() { opts.specific_fields = Some(specific); }
+            opts
+        }
+    }
+}
