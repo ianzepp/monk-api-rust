@@ -1,1 +1,66 @@
-/target
+# Rust
+/target/
+/Cargo.lock
+*.pdb
+
+# Environment & Configuration
+.env
+.env.*
+!.env.example
+config.toml
+config.json
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+log/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.temp/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Coverage reports
+/coverage/
+*.gcov
+*.gcno
+*.gcda
+lcov.info
+tarpaulin-report.html
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Test artifacts
+/test-results/
+/test-output/
+
+# Local monk CLI config
+.monk/
+monk.json
