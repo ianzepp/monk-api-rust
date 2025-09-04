@@ -2,6 +2,7 @@ use clap::Subcommand;
 use serde_json::json;
 use url::Url;
 use crate::cli::config::*;
+use crate::cli::utils::*;
 use crate::cli::OutputFormat;
 
 #[derive(Subcommand)]
@@ -83,18 +84,11 @@ pub async fn handle(cmd: ServerCommands, output_format: OutputFormat) -> anyhow:
             config.servers.insert(server_name.clone(), server_info);
             save_server_config(&config)?;
             
-            match output_format {
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&json!({
-                        "success": true,
-                        "message": format!("Server '{}' added successfully", server_name),
-                        "server": server_name
-                    }))?);
-                }
-                OutputFormat::Text => {
-                    println!("✓ Server '{}' added successfully", server_name);
-                }
-            }
+            output_success(
+                &output_format,
+                &format!("Server '{}' added successfully", server_name),
+                Some(json!({ "server": server_name })),
+            )?;
             
             Ok(())
         }
@@ -103,17 +97,7 @@ pub async fn handle(cmd: ServerCommands, output_format: OutputFormat) -> anyhow:
             let env_config = load_environment_config()?;
             
             if config.servers.is_empty() {
-                match output_format {
-                    OutputFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(&json!({
-                            "servers": []
-                        }))?);
-                    }
-                    OutputFormat::Text => {
-                        println!("No servers configured");
-                    }
-                }
-                return Ok(());
+                return output_empty_collection(&output_format, "servers", "No servers configured");
             }
             
             match output_format {
@@ -160,34 +144,19 @@ pub async fn handle(cmd: ServerCommands, output_format: OutputFormat) -> anyhow:
                 Some(server_name) => {
                     let config = load_server_config()?;
                     if let Some(server_info) = config.servers.get(&server_name) {
-                        match output_format {
-                            OutputFormat::Json => {
-                                println!("{}", serde_json::to_string_pretty(&json!({
-                                    "current_server": {
-                                        "name": server_name,
-                                        "url": server_info.url(),
-                                        "status": server_info.status,
-                                        "description": server_info.description
-                                    }
-                                }))?);
-                            }
-                            OutputFormat::Text => {
-                                println!("Current server: {} ({})", server_name, server_info.url());
-                            }
-                        }
+                        let details = json!({
+                            "name": server_name,
+                            "url": server_info.url(),
+                            "status": server_info.status,
+                            "description": server_info.description
+                        });
+                        output_current_item(&output_format, "server", &server_name, details)?;
                     } else {
                         return Err(anyhow::anyhow!("Current server '{}' not found in configuration", server_name));
                     }
                 }
                 None => {
-                    match output_format {
-                        OutputFormat::Json => {
-                            println!("{}", serde_json::to_string_pretty(&json!({"current_server": null}))?);
-                        }
-                        OutputFormat::Text => {
-                            println!("No current server set");
-                        }
-                    }
+                    output_no_current_item(&output_format, "server")?;
                 }
             }
             
@@ -196,28 +165,17 @@ pub async fn handle(cmd: ServerCommands, output_format: OutputFormat) -> anyhow:
         ServerCommands::Use { name } => {
             match name {
                 Some(server_name) => {
-                    let config = load_server_config()?;
-                    
-                    if !config.servers.contains_key(&server_name) {
-                        return Err(anyhow::anyhow!("Server '{}' not found", server_name));
-                    }
-                    
-                    let mut env_config = load_environment_config()?;
-                    env_config.current_server = Some(server_name.clone());
-                    save_environment_config(&env_config)?;
-                    
-                    match output_format {
-                        OutputFormat::Json => {
-                            println!("{}", serde_json::to_string_pretty(&json!({
-                                "success": true,
-                                "message": format!("Switched to server '{}'", server_name),
-                                "current_server": server_name
-                            }))?);
-                        }
-                        OutputFormat::Text => {
-                            println!("✓ Switched to server '{}'", server_name);
-                        }
-                    }
+                    switch_current_item(
+                        &server_name,
+                        "server",
+                        |name| Ok(load_server_config()?.servers.contains_key(name)),
+                        |name| {
+                            let mut env_config = load_environment_config()?;
+                            env_config.current_server = Some(name.to_string());
+                            save_environment_config(&env_config)
+                        },
+                        &output_format,
+                    )?;
                 }
                 None => {
                     // Show current server (same as ServerCommands::Current)
@@ -260,33 +218,25 @@ pub async fn handle(cmd: ServerCommands, output_format: OutputFormat) -> anyhow:
             Ok(())
         }
         ServerCommands::Delete { name } => {
-            let mut config = load_server_config()?;
-            
-            if !config.servers.contains_key(&name) {
-                return Err(anyhow::anyhow!("Server '{}' not found", name));
-            }
-            
-            config.servers.remove(&name);
-            save_server_config(&config)?;
-            
-            // If this was the current server, clear it
-            let mut env_config = load_environment_config()?;
-            if env_config.current_server.as_ref() == Some(&name) {
-                env_config.current_server = None;
-                save_environment_config(&env_config)?;
-            }
-            
-            match output_format {
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&json!({
-                        "success": true,
-                        "message": format!("Server '{}' deleted successfully", name)
-                    }))?);
-                }
-                OutputFormat::Text => {
-                    println!("✓ Server '{}' deleted successfully", name);
-                }
-            }
+            delete_item_with_current_check(
+                &name,
+                "server",
+                |name| Ok(load_server_config()?.servers.contains_key(name)),
+                |name| {
+                    let mut config = load_server_config()?;
+                    config.servers.remove(name);
+                    save_server_config(&config)
+                },
+                |name| {
+                    let mut env_config = load_environment_config()?;
+                    if env_config.current_server.as_deref() == Some(name) {
+                        env_config.current_server = None;
+                        save_environment_config(&env_config)?;
+                    }
+                    Ok(())
+                },
+                &output_format,
+            )?;
             
             Ok(())
         }

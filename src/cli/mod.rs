@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config;
+pub mod utils;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
