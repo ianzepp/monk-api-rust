@@ -25,6 +25,16 @@ where
         }
     }
 
+    /// Create an observer pipeline with all SQL executors registered
+    /// REST API requires all CRUD operations to be available
+    fn create_pipeline() -> crate::observer::ObserverPipeline {
+        use crate::observer::{ObserverPipeline, register_all_sql_executors};
+        
+        let mut pipeline = ObserverPipeline::new();
+        register_all_sql_executors(&mut pipeline);
+        pipeline
+    }
+
     pub async fn select_any(&self, filter_data: FilterData) -> Result<Vec<T>, DatabaseError> {
         QueryBuilder::<T>::new(&self.table_name)?
             .filter(filter_data)?
@@ -84,11 +94,10 @@ where
 
     /// Create multiple records from StatefulRecord array  
     pub async fn create_all(&self, records: Vec<crate::observer::stateful_record::StatefulRecord>) -> Result<Vec<T>, DatabaseError> {
-        use crate::observer::{ObserverPipeline, SqlExecutor, Operation};
+        use crate::observer::Operation;
         
-        // Create observer pipeline with minimal Ring 5 database observer
-        let mut pipeline = ObserverPipeline::new();
-        pipeline.register_observer(crate::observer::traits::ObserverBox::Database(Box::new(SqlExecutor::default())));
+        // Create observer pipeline with all SQL executors (REST API requirement)
+        let pipeline = Self::create_pipeline();
         
         // Execute through observer pipeline
         let observer_result = pipeline.execute_crud(
@@ -127,7 +136,7 @@ where
 
     /// Update multiple records by ID
     pub async fn update_all(&self, updates: Vec<(Uuid, std::collections::HashMap<String, serde_json::Value>)>) -> Result<Vec<T>, DatabaseError> {
-        use crate::observer::{ObserverPipeline, SqlExecutor, Operation};
+        use crate::observer::Operation;
         use crate::observer::stateful_record::{StatefulRecord, RecordOperation};
         
         if updates.is_empty() {
@@ -176,9 +185,8 @@ where
             }
         }
         
-        // Create observer pipeline with minimal Ring 5 database observer
-        let mut pipeline = ObserverPipeline::new();
-        pipeline.register_observer(crate::observer::traits::ObserverBox::Database(Box::new(SqlExecutor::default())));
+        // Create observer pipeline with all SQL executors (REST API requirement)
+        let pipeline = Self::create_pipeline();
         
         // Execute through observer pipeline
         let observer_result = pipeline.execute_crud(
