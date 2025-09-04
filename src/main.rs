@@ -47,6 +47,7 @@ fn app() -> Router {
         // Protected API (auth skipped for MVP)
         .merge(data_routes())
         .merge(find_routes())
+        .merge(meta_routes())
         // Global middleware
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -84,9 +85,21 @@ fn find_routes() -> Router {
 
     Router::new()
         // Find/search operations with filters
+        .route("/api/find/:schema", post(find::find_post).delete(find::find_delete))
+}
+
+fn meta_routes() -> Router {
+    use axum::routing::{delete, post, put};
+    use handlers::protected::meta;
+
+    Router::new()
+        // Schema definition management
         .route(
-            "/api/find/:schema",
-            post(find::find_post).delete(find::find_delete),
+            "/api/meta/:schema",
+            get(meta::schema_get)
+                .post(meta::schema_post)
+                .put(meta::schema_put)
+                .delete(meta::schema_delete),
         )
 }
 
