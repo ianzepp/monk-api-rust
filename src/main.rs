@@ -45,29 +45,41 @@ fn app() -> Router {
         .route("/", get(root))
         .route("/health", get(health))
         // Public auth routes
-        .merge(auth_routes())
+        .merge(auth_public_routes())
         // Protected API (auth skipped for MVP)
         .merge(data_routes())
         .merge(find_routes())
         .merge(meta_routes())
-        .merge(protected_auth_routes())
+        .merge(auth_routes())
         // Global middleware
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
 }
 
-fn auth_routes() -> Router {
+fn auth_public_routes() -> Router {
     use axum::routing::{delete, post, put};
     use handlers::public::auth;
 
     Router::new()
-        // Session management
-        .route("/auth/login", post(auth::session_login))
-        .route("/auth/refresh", post(auth::session_refresh))
+        // Session management with tenant and user in path
+        .route("/auth/login/:tenant/:user", post(auth::session_login))
+        .route("/auth/refresh/:tenant/:user", post(auth::session_refresh))
         // User management
         .route("/auth/register", post(auth::user_register))
         .route("/auth/activate", put(auth::user_activate))
         .route("/auth/user", delete(auth::user_delete))
+}
+
+fn auth_routes() -> Router {
+    use axum::routing::{delete, post, put};
+    use handlers::protected::auth;
+
+    Router::new()
+        // Session management for authenticated users
+        .route("/api/auth/whoami", get(auth::session_whoami))
+        .route("/api/auth/sudo", post(auth::session_sudo))
+        .route("/api/auth/session/refresh", put(auth::session_refresh))
+        .route("/api/auth/session", delete(auth::session_logout))
 }
 
 fn data_routes() -> Router {
@@ -120,18 +132,6 @@ fn meta_routes() -> Router {
         )
 }
 
-fn protected_auth_routes() -> Router {
-    use axum::routing::{delete, post, put};
-    use handlers::protected::auth;
-
-    Router::new()
-        // Session management for authenticated users
-        .route("/api/auth/whoami", get(auth::session_whoami))
-        .route("/api/auth/sudo", post(auth::session_sudo))
-        .route("/api/auth/session/refresh", put(auth::session_refresh))
-        .route("/api/auth/session", delete(auth::session_logout))
-}
-
 async fn root() -> axum::response::Json<Value> {
     let version = env!("CARGO_PKG_VERSION");
 
@@ -143,7 +143,7 @@ async fn root() -> axum::response::Json<Value> {
             "description": "Lightweight PaaS backend API built with Rust (Axum)",
             "endpoints": {
                 "home": "/ (public)",
-                "public_auth": "/auth/* (public - token acquisition)",
+                "public_auth": "/auth/login/:tenant/:user, /auth/refresh/:tenant/:user (public - token acquisition)",
                 "docs": "/docs[/:api] (public)",
                 "auth": "/api/auth/* (protected - user management)",
                 "meta": "/api/meta/:schema (protected)",

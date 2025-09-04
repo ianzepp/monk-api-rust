@@ -5,12 +5,12 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::Row;
 
 use crate::api::format::record_to_api_value;
+use crate::database::dynamic::DynamicRepository;
 use crate::database::manager::DatabaseManager;
-use crate::filter::{Filter, FilterData};
-use crate::observer::pipeline::execute_select;
+use crate::filter::FilterData;
+
 use crate::observer::stateful_record::{RecordOperation, StatefulRecord};
 
 use super::utils::{metadata_options_from_query, resolve_tenant_db};
@@ -32,26 +32,10 @@ pub async fn get(Path(schema): Path<String>, Query(query): Query<ListQuery>) -> 
     let tenant_db = match resolve_tenant_db(&query.tenant) {
         Ok(db) => db,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": msg })),
-            )
+            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
                 .into_response()
         }
     };
-
-    // Build SQL query using row_to_json to avoid hand-mapping columns
-    let mut inner = format!(
-        "SELECT * FROM \"{}\" WHERE \"trashed_at\" IS NULL AND \"deleted_at\" IS NULL",
-        schema
-    );
-    if let Some(limit) = query.limit {
-        inner.push_str(&format!(" LIMIT {}", limit.max(0)));
-    }
-    if let Some(offset) = query.offset {
-        inner.push_str(&format!(" OFFSET {}", offset.max(0)));
-    }
-    let sql = format!("SELECT row_to_json(t) AS row FROM ({}) t", inner);
 
     let pool = match DatabaseManager::tenant_pool(&tenant_db).await {
         Ok(p) => p,
@@ -64,8 +48,24 @@ pub async fn get(Path(schema): Path<String>, Query(query): Query<ListQuery>) -> 
         }
     };
 
-    let rows = match sqlx::query(&sql).fetch_all(&pool).await {
-        Ok(r) => r,
+    // Build filter data with standard conditions for non-deleted records
+    let filter_data = FilterData {
+        select: None, // Select all columns
+        where_clause: Some(json!({
+            "$and": [
+                { "trashed_at": { "$is": null } },
+                { "deleted_at": { "$is": null } }
+            ]
+        })),
+        order: None,
+        limit: query.limit.map(|l| l.max(0) as i32),
+        offset: query.offset.map(|o| o.max(0) as i32),
+    };
+
+    // Use DynamicRepository instead of raw SQL
+    let repository = DynamicRepository::new(&schema, pool);
+    let record_maps = match repository.select_any(filter_data).await {
+        Ok(maps) => maps,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -75,21 +75,17 @@ pub async fn get(Path(schema): Path<String>, Query(query): Query<ListQuery>) -> 
         }
     };
 
+    // Convert maps to StatefulRecord instances
     let mut records = Vec::new();
-    for row in rows {
-        let v: Value = row.try_get("row").unwrap_or(Value::Null);
-        if let Value::Object(map) = v {
-            let mut rec = StatefulRecord::existing(map.clone(), None, RecordOperation::NoChange);
-            rec.extract_system_metadata();
-            records.push(rec);
-        }
+    for map in record_maps {
+        let mut rec = StatefulRecord::existing(map, None, RecordOperation::NoChange);
+        rec.extract_system_metadata();
+        records.push(rec);
     }
 
     let options = metadata_options_from_query(query.meta.as_deref());
-    let data: Vec<Value> = records
-        .iter()
-        .map(|r| record_to_api_value(r, &schema, &options))
-        .collect();
+    let data: Vec<Value> =
+        records.iter().map(|r| record_to_api_value(r, &schema, &options)).collect();
 
     Json(json!({ "success": true, "data": data })).into_response()
 }
@@ -104,10 +100,7 @@ pub async fn post(
     let tenant_db = match resolve_tenant_db(&query.tenant) {
         Ok(db) => db,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": msg })),
-            )
+            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
         }
     };
 
@@ -137,10 +130,7 @@ pub async fn put(
     let _tenant_db = match resolve_tenant_db(&query.tenant) {
         Ok(db) => db,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": msg })),
-            )
+            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
         }
     };
 
@@ -169,10 +159,7 @@ pub async fn delete(
     let _tenant_db = match resolve_tenant_db(&query.tenant) {
         Ok(db) => db,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": msg })),
-            )
+            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
         }
     };
 
@@ -202,10 +189,7 @@ pub async fn patch(
     let _tenant_db = match resolve_tenant_db(&query.tenant) {
         Ok(db) => db,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": msg })),
-            )
+            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
         }
     };
 

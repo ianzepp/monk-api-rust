@@ -1,4 +1,4 @@
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -6,8 +6,7 @@ use super::utils::{generate_jwt_token, validate_jwt_token};
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
-    pub tenant: String,
-    pub username: String,
+    pub password: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -15,16 +14,19 @@ pub struct RefreshRequest {
     pub token: String,
 }
 
-/// POST /auth/login - Authenticate user and receive JWT token
+/// POST /auth/login/:tenant/:user - Authenticate user and receive JWT token
 /// 
 /// This is the primary authentication endpoint that validates user credentials
 /// and returns a JWT token for accessing protected APIs.
 /// 
+/// URL Parameters:
+/// - tenant: Tenant name (from tenants.name column in monk_main DB)
+/// - user: User auth identifier (from users.auth column in tenant DB)
+/// 
 /// Expected Input:
 /// ```json
 /// {
-///   "tenant": "string",     // Required: Tenant identifier
-///   "username": "string"    // Required: Username for authentication
+///   "password": "string"    // Required: User password
 /// }
 /// ```
 /// 
@@ -45,9 +47,12 @@ pub struct RefreshRequest {
 ///   }
 /// }
 /// ```
-pub async fn login(Json(_payload): Json<LoginRequest>) -> impl IntoResponse {
-    // TODO: Extract tenant and username from request
-    // TODO: Validate tenant exists and is active
+pub async fn login(
+    Path((tenant, user)): Path<(String, String)>,
+    Json(_payload): Json<LoginRequest>,
+) -> impl IntoResponse {
+    // TODO: Validate tenant exists and is active using tenant parameter
+    // TODO: Extract user auth identifier from user parameter
     // TODO: Query tenant database for user credentials
     // TODO: Validate password/authentication method
     // TODO: Generate JWT token with user claims using utils::generate_jwt_token
@@ -82,11 +87,15 @@ pub async fn login(Json(_payload): Json<LoginRequest>) -> impl IntoResponse {
     )
 }
 
-/// POST /auth/refresh - Refresh expired JWT token
+/// POST /auth/refresh/:tenant/:user - Refresh expired JWT token
 /// 
 /// Allows clients to refresh their JWT tokens without requiring full
 /// re-authentication. Accepts an existing JWT token (which may be expired)
 /// and returns a new token with extended expiration.
+/// 
+/// URL Parameters:
+/// - tenant: Tenant name (from tenants.name column in monk_main DB)
+/// - user: User auth identifier (from users.auth column in tenant DB)
 /// 
 /// Expected Input:
 /// ```json
@@ -105,7 +114,11 @@ pub async fn login(Json(_payload): Json<LoginRequest>) -> impl IntoResponse {
 ///   }
 /// }
 /// ```
-pub async fn refresh(Json(_payload): Json<RefreshRequest>) -> impl IntoResponse {
+pub async fn refresh(
+    Path((tenant, user)): Path<(String, String)>,
+    Json(_payload): Json<RefreshRequest>,
+) -> impl IntoResponse {
+    // TODO: Validate tenant and user parameters match token claims
     // TODO: Extract JWT token from request body
     // TODO: Validate token signature using utils::validate_jwt_token (even if expired)
     // TODO: Check token hasn't been revoked/blacklisted
