@@ -1,16 +1,13 @@
-use axum::{
-    routing::get,
-    Router,
-};
+use axum::{routing::get, Router};
 use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+mod api;
 mod config;
 mod database;
-mod observer;
-mod api;
-mod handlers;
 mod filter;
+mod handlers;
+mod observer;
 
 #[tokio::main]
 async fn main() {
@@ -49,6 +46,7 @@ fn app() -> Router {
         .route("/health", get(health))
         // Protected API (auth skipped for MVP)
         .merge(data_routes())
+        .merge(find_routes())
         // Global middleware
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -56,7 +54,7 @@ fn app() -> Router {
 
 fn data_routes() -> Router {
     use axum::routing::{delete, patch, post, put};
-    use handlers::protected::{data, find};
+    use handlers::protected::data;
 
     Router::new()
         // Schema-level operations (collection)
@@ -77,14 +75,18 @@ fn data_routes() -> Router {
                 .delete(data::record_delete),
         )
         // Record restore endpoint
-        .route(
-            "/api/data/:schema/:id/restore",
-            post(data::record_restore),
-        )
-        // Find endpoint (search/filter)
+        .route("/api/data/:schema/:id/restore", post(data::record_restore))
+}
+
+fn find_routes() -> Router {
+    use axum::routing::{delete, post};
+    use handlers::protected::find;
+
+    Router::new()
+        // Find/search operations with filters
         .route(
             "/api/find/:schema",
-            post(find::find_post::find_post),
+            post(find::find_post).delete(find::find_delete),
         )
 }
 
