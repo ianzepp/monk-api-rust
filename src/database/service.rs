@@ -1,4 +1,3 @@
-use sqlx::PgPool;
 
 use crate::database::manager::{DatabaseError, DatabaseManager};
 use crate::database::models::tenant::Tenant;

@@ -7,7 +7,6 @@ use uuid::Uuid;
 use crate::observer::traits::{Observer, Ring5, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
-use crate::database::manager::DatabaseManager;
 
 /// Ring 5: Revert SQL Executor - handles REVERT operations only
 #[derive(Default)]

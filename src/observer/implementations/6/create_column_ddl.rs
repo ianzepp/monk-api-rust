@@ -1,8 +1,7 @@
 // Ring 6: Create Column DDL Executor - handles ALTER TABLE ADD COLUMN after column record insert
 use async_trait::async_trait;
 use serde_json::{Value, Map};
-use sqlx::{PgPool, Row};
-use uuid::Uuid;
+use sqlx::Row;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
@@ -92,7 +91,7 @@ impl CreateColumnDdl {
         Ok(false)
     }
     
-    async fn get_table_name_for_schema(&self, context: &ObserverContext, schema_name: &str) -> Result<String, ObserverError> {
+    async fn get_table_name_for_schema(&self, _context: &ObserverContext, schema_name: &str) -> Result<String, ObserverError> {
         // Get database pool directly (same pattern as Ring 5 observers)
         let pool = crate::database::manager::DatabaseManager::main_pool().await
             .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;

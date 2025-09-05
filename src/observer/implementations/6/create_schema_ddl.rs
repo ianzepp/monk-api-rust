@@ -1,8 +1,6 @@
 // Ring 6: Create Schema DDL Executor - handles CREATE TABLE after schema record insert
 use async_trait::async_trait;
-use serde_json::{Value, Map};
-use sqlx::PgPool;
-use uuid::Uuid;
+use serde_json::Value;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;

@@ -1,8 +1,7 @@
 // Ring 6: Update Column DDL Executor - handles ALTER COLUMN after column record update
 use async_trait::async_trait;
 use serde_json::{Value, Map};
-use sqlx::{PgPool, Row};
-use uuid::Uuid;
+use sqlx::Row;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;

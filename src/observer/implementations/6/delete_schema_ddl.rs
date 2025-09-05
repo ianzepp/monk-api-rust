@@ -1,8 +1,5 @@
 // Ring 6: Delete Schema DDL Executor - handles DROP TABLE after schema record delete
 use async_trait::async_trait;
-use serde_json::{Value, Map};
-use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;

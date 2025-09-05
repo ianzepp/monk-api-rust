@@ -17,9 +17,6 @@ use crate::filter::FilterData;
 pub struct ObserverPipeline {
     // Observer registry by ring
     observers: HashMap<ObserverRing, Vec<ObserverBox>>,
-    
-    // Configuration
-    max_recursion_depth: usize,
 }
 
 impl ObserverPipeline {
@@ -28,7 +25,6 @@ impl ObserverPipeline {
     pub fn new() -> Self {
         Self {
             observers: HashMap::new(),
-            max_recursion_depth: 3,
         }
     }
     

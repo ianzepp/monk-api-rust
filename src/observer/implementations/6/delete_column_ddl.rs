@@ -1,8 +1,6 @@
 // Ring 6: Delete Column DDL Executor - handles ALTER TABLE DROP COLUMN after column record delete
 use async_trait::async_trait;
-use serde_json::{Value, Map};
-use sqlx::{PgPool, Row};
-use uuid::Uuid;
+use sqlx::Row;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;

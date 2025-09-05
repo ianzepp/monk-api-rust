@@ -1,8 +1,5 @@
 // Ring 6: Update Schema DDL Executor - handles table alterations after schema record update
 use async_trait::async_trait;
-use serde_json::{Value, Map};
-use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;

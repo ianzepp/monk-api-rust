@@ -1,13 +1,12 @@
 // Ring 5: Select SQL Executor - handles SELECT operations
 use async_trait::async_trait;
 use serde_json::{Value, Map};
-use sqlx::{PgPool, Row, Column, TypeInfo};
+use sqlx::{Row, Column, TypeInfo};
 use uuid::Uuid;
 
 use crate::observer::traits::{Observer, Ring5, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
-use crate::database::manager::DatabaseManager;
 use crate::filter::Filter;
 
 /// Ring 5: Select SQL Executor - handles SELECT operations only

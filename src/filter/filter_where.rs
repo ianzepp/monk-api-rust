@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::types::{FilterOp, FilterWhereInfo, FilterWhereOptions, SqlResult};
+use super::types::{FilterOp, FilterWhereInfo, FilterWhereOptions};
 use super::error::FilterError;
 
 pub struct FilterWhere {
