@@ -1,19 +1,19 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Extension, Path, Query},
     http::StatusCode,
     response::{IntoResponse, Json},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::database::repository::Repository;
+use crate::database::record::{Record, RecordVecExt};
 use crate::filter::FilterData;
-use crate::handlers::protected::data::utils;
-use crate::observer::pipeline::execute_select;
+use crate::error::ApiError;
+use crate::middleware::{TenantPool, AuthUser, ApiResponse, ApiResult};
 
 #[derive(Debug, Deserialize)]
 pub struct FindQuery {
-    /// Tenant database name. If omitted, falls back to MONK_TENANT_DB env.
-    pub tenant: Option<String>,
     /// Include metadata sections. Examples: meta=true, meta=system,permissions
     pub meta: Option<String>,
 }
@@ -29,31 +29,16 @@ pub async fn post(
     Path(schema): Path<String>,
     Query(query): Query<FindQuery>,
     Json(filter_data): Json<FilterData>,
-) -> impl IntoResponse {
-    // Resolve tenant database
-    let tenant_db = match utils::resolve_tenant_db(&query.tenant) {
-        Ok(db) => db,
-        Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": msg })),
-            )
-                .into_response()
-        }
-    };
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // Use Repository to select records with filter criteria
+    let repository = Repository::new(&schema, pool);
+    let records = repository.select_any(filter_data).await?;
 
-    // Prepare metadata options from query
-    let options = utils::metadata_options_from_query(query.meta.as_deref());
-
-    // Execute via observer pipeline
-    match execute_select(&schema, &tenant_db, filter_data, &options).await {
-        Ok(data) => Json(json!({ "success": true, "data": data })).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "success": false, "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+    // Return array of matching records
+    let data = records.to_api();
+    Ok(ApiResponse::success(data))
 }
 
 /// DELETE /api/find/:schema - Bulk delete matching records
@@ -63,28 +48,14 @@ pub async fn delete(
     Path(schema): Path<String>,
     Query(query): Query<FindQuery>,
     Json(filter_data): Json<FilterData>,
-) -> impl IntoResponse {
-    let _tenant_db = match utils::resolve_tenant_db(&query.tenant) {
-        Ok(db) => db,
-        Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": msg })),
-            )
-        }
-    };
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // Use Repository to delete records matching filter criteria
+    let repository = Repository::new(&schema, pool);
+    let deleted_records = repository.delete_any(filter_data).await?;
 
-    // TODO: Implement bulk delete for matching records
-    // 1. Use filter criteria to find records
-    // 2. Soft delete all matching records
-    // 3. Return count of deleted records
-    
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("DELETE /api/find/{} not yet implemented", schema),
-            "message": "This will bulk delete records matching the filter"
-        })),
-    )
+    // Return array of deleted records (with soft delete timestamps)
+    let data = deleted_records.to_api();
+    Ok(ApiResponse::success(data))
 }

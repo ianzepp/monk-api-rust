@@ -217,6 +217,7 @@ impl Record {
         self.set_system_field("id", Value::String(id.to_string()))
     }
 
+
     /// Get created_at timestamp
     pub fn created_at(&self) -> Option<DateTime<Utc>> {
         self.get("created_at")
@@ -553,6 +554,9 @@ pub trait RecordVecExt {
     /// Convert to API output JSON array  
     fn to_api_output_array(self) -> Value;
     
+    /// Convert to API output (alias for to_api_output_array)
+    fn to_api(self) -> Value;
+    
     /// Convert to JSON string
     fn to_json_string(self) -> Result<String, serde_json::Error>;
     
@@ -567,6 +571,10 @@ impl RecordVecExt for Vec<Record> {
     
     fn to_api_output_array(self) -> Value {
         Record::to_api_output_array(self)
+    }
+    
+    fn to_api(self) -> Value {
+        self.to_api_output_array()
     }
     
     fn to_json_string(self) -> Result<String, serde_json::Error> {

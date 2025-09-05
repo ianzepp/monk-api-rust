@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::database::repository::Repository;
-use crate::database::record::Record;
+use crate::database::record::{Record, RecordVecExt};
 use crate::filter::FilterData;
 use crate::error::ApiError;
 use crate::middleware::{TenantPool, AuthUser, ApiResponse, ApiResult};
@@ -38,7 +38,7 @@ pub async fn get(
     ).await?;
 
     // Use Record's ergonomic API output helper and return clean data
-    let data = Record::to_api_output_array(records);
+    let data = records.to_api();
     Ok(ApiResponse::success(data))
 }
 
@@ -58,7 +58,7 @@ pub async fn post(
     let created_records = repository.create_all(records).await?;
 
     // Return array of created records with 201 Created status
-    let data = Record::to_api_output_array(created_records);
+    let data = created_records.to_api();
     Ok(ApiResponse::created(data))
 }
 
@@ -78,7 +78,7 @@ pub async fn put(
     let upserted_records = repository.upsert_all(records).await?;
 
     // Return array of all upserted records
-    let data = Record::to_api_output_array(upserted_records);
+    let data = upserted_records.to_api();
     Ok(ApiResponse::success(data))
 }
 
@@ -98,7 +98,7 @@ pub async fn delete(
     let deleted_records = repository.delete_all(records).await?;
 
     // Return array of deleted records (with soft delete timestamps)
-    let data = Record::to_api_output_array(deleted_records);
+    let data = deleted_records.to_api();
     Ok(ApiResponse::success(data))
 }
 
@@ -118,6 +118,6 @@ pub async fn patch(
     let updated_records = repository.update_all(records).await?;
 
     // Return array of updated records
-    let data = Record::to_api_output_array(updated_records);
+    let data = updated_records.to_api();
     Ok(ApiResponse::success(data))
 }

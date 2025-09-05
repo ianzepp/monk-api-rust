@@ -305,7 +305,7 @@ impl Repository {
         let mut records_to_create = Vec::new();
 
         for mut record in records {
-            if record.has_id() {
+            if record.id().is_some() {
                 record.set_operation(Operation::Update);
                 records_to_update.push(record);
             } else {
@@ -352,7 +352,7 @@ impl Repository {
 
         // Validate IDs and set operation type for all records
         for (index, record) in records.iter_mut().enumerate() {
-            if !record.has_id() {
+            if record.id().is_none() {
                 return Err(DatabaseError::InvalidOperation(
                     format!("UPDATE requires all records to have IDs. Record at index {} is missing an ID", index)
                 ));
@@ -390,7 +390,7 @@ impl Repository {
 
         // Validate IDs and set operation type for all records
         for (index, record) in records.iter_mut().enumerate() {
-            if !record.has_id() {
+            if record.id().is_none() {
                 return Err(DatabaseError::InvalidOperation(
                     format!("DELETE requires all records to have IDs. Record at index {} is missing an ID", index)
                 ));
@@ -438,6 +438,31 @@ impl Repository {
         }
         
         let records = self.select_ids(ids).await?;
+        self.delete_all(records).await
+    }
+
+    /// Update records matching filter criteria with the provided changes
+    pub async fn update_any(&self, filter_data: FilterData, change: Record) -> Result<Vec<Record>, DatabaseError> {
+        let matching_records = self.select_any(filter_data).await?;
+        
+        if matching_records.is_empty() {
+            return Ok(Vec::new());
+        }
+        
+        // Apply changes to all matching records
+        let change_data = change.to_hashmap();
+        let mut updated_records = Vec::new();
+        for mut record in matching_records {
+            record.apply_changes(change_data.clone());
+            updated_records.push(record);
+        }
+        
+        self.update_all(updated_records).await
+    }
+
+    /// Delete records matching filter criteria
+    pub async fn delete_any(&self, filter_data: FilterData) -> Result<Vec<Record>, DatabaseError> {
+        let records = self.select_any(filter_data).await?;
         self.delete_all(records).await
     }
 

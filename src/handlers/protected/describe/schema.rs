@@ -1,15 +1,19 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Extension, Path, Query},
     http::StatusCode,
     response::{IntoResponse, Json},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::services::describe_service::DescribeService;
+use crate::middleware::{TenantPool, AuthUser, ApiResponse, ApiResult};
+use crate::error::ApiError;
+
 #[derive(Debug, Deserialize)]
-pub struct MetaQuery {
-    /// Tenant database name. If omitted, falls back to MONK_TENANT_DB env.
-    pub tenant: Option<String>,
+pub struct DescribeQuery {
+    /// Include additional metadata. Examples: meta=true, meta=system,permissions
+    pub meta: Option<String>,
 }
 
 /// GET /api/describe/:schema - Get JSON Schema definition for a schema
@@ -21,43 +25,24 @@ pub struct MetaQuery {
 /// @returns YAML JSON Schema definition or 404 if schema doesn't exist
 pub async fn get(
     Path(schema): Path<String>,
-    Query(_query): Query<MetaQuery>,
-) -> impl IntoResponse {
-    // TODO: Query schema registry/database for stored schema definition
-    // TODO: Return original YAML JSON Schema that created this table
-    // TODO: Handle 404 if schema doesn't exist
+    Query(query): Query<DescribeQuery>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // Create DescribeService and get schema
+    let service = DescribeService::new(pool);
+    let schema_record = service.select_404(&schema).await
+        .map_err(|e| match e {
+            crate::services::describe_service::DescribeError::NotFound(_) => 
+                ApiError::not_found(format!("Schema '{}' not found", schema)),
+            _ => ApiError::internal_server_error("Failed to retrieve schema")
+        })?;
+
+    // Return the definition field from the schema record
+    let definition = schema_record.get("definition")
+        .ok_or_else(|| ApiError::internal_server_error("Schema definition missing"))?;
     
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": "Meta schema GET not yet implemented",
-            "message": format!("This will return the JSON Schema definition for '{}'", schema),
-            "schema": schema,
-            "planned_response": {
-                "name": schema,
-                "type": "object", 
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "format": "uuid"
-                    },
-                    "name": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 100
-                    },
-                    "created_at": {
-                        "type": "string", 
-                        "format": "date-time",
-                        "readOnly": true
-                    }
-                },
-                "required": ["name"],
-                "additionalProperties": false
-            }
-        })),
-    )
+    Ok(ApiResponse::success(definition.clone()))
 }
 
 /// POST /api/describe/:schema - Create a new schema from JSON Schema definition
@@ -69,8 +54,10 @@ pub async fn get(
 /// 4. Enables /api/data/:schema operations on new table
 pub async fn post(
     Path(schema): Path<String>,
-    Query(_query): Query<MetaQuery>,
+    Query(_query): Query<DescribeQuery>,
     Json(_payload): Json<Value>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
 ) -> impl IntoResponse {
     // TODO: Implement schema creation
     // 1. Parse and validate JSON Schema definition
@@ -99,8 +86,10 @@ pub async fn post(
 /// 5. Updates schema registry
 pub async fn put(
     Path(schema): Path<String>,
-    Query(_query): Query<MetaQuery>,
+    Query(_query): Query<DescribeQuery>,
     Json(_payload): Json<Value>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
 ) -> impl IntoResponse {
     // TODO: Implement schema update
     // 1. Fetch existing schema definition
@@ -128,22 +117,30 @@ pub async fn put(
 /// 3. Disable all /api/data/:schema operations
 pub async fn delete(
     Path(schema): Path<String>,
-    Query(_query): Query<MetaQuery>,
-) -> impl IntoResponse {
-    // TODO: Implement schema deletion
-    // 1. Check for dependent schemas/relationships
-    // 2. Drop PostgreSQL table
-    // 3. Remove from schema registry
-    // 4. Return success with deletion summary
-    
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("DELETE /api/describe/{} not yet implemented", schema),
-            "message": "This will delete the schema and associated table (destructive operation)"
-        })),
-    )
+    Query(_query): Query<DescribeQuery>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // Create DescribeService and delete schema
+    let service = DescribeService::new(pool);
+    let success = service.delete_one(&schema).await
+        .map_err(|e| match e {
+            crate::services::describe_service::DescribeError::NotFound(_) => 
+                ApiError::not_found(format!("Schema '{}' not found", schema)),
+            crate::services::describe_service::DescribeError::ProtectedSchema(name) => 
+                ApiError::bad_request(format!("Schema '{}' is protected and cannot be deleted", name)),
+            _ => ApiError::internal_server_error("Failed to delete schema")
+        })?;
+
+    if success {
+        Ok(ApiResponse::success(json!({
+            "deleted": true,
+            "schema": schema,
+            "message": "Schema marked for deletion"
+        })))
+    } else {
+        Err(ApiError::not_found(format!("Schema '{}' not found", schema)))
+    }
 }
 
 /*

@@ -1,61 +1,15 @@
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use uuid::Uuid;
 use anyhow::Result;
-use chrono::NaiveDateTime;
-use sqlx::types::BigDecimal;
+use std::collections::HashMap;
+
+use crate::database::repository::Repository;
+use crate::database::record::Record;
 use crate::database::manager::DatabaseError;
-use crate::services::tenant_service::{TenantService, TenantError};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchemaInfo {
-    pub id: Uuid,
-    pub name: String,
-    pub table_name: String,
-    pub status: String,
-    pub definition: Value,
-    pub field_count: String,
-    pub json_checksum: Option<String>,
-    pub access_read: Option<Vec<Uuid>>,
-    pub access_edit: Option<Vec<Uuid>>,
-    pub access_full: Option<Vec<Uuid>>,
-    pub access_deny: Option<Vec<Uuid>>,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
-    pub trashed_at: Option<NaiveDateTime>,
-    pub deleted_at: Option<NaiveDateTime>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ColumnInfo {
-    pub id: Uuid,
-    pub schema_name: String,
-    pub column_name: String,
-    pub pg_type: String,
-    pub is_required: String,
-    pub default_value: Option<String>,
-    pub relationship_type: Option<String>,
-    pub related_schema: Option<String>,
-    pub related_column: Option<String>,
-    pub relationship_name: Option<String>,
-    pub cascade_delete: Option<bool>,
-    pub required_relationship: Option<bool>,
-    pub minimum: Option<f64>,
-    pub maximum: Option<f64>,
-    pub pattern_regex: Option<String>,
-    pub enum_values: Option<Vec<String>>,
-    pub is_array: Option<bool>,
-    pub description: Option<String>,
-    pub access_read: Option<Vec<Uuid>>,
-    pub access_edit: Option<Vec<Uuid>>,
-    pub access_full: Option<Vec<Uuid>>,
-    pub access_deny: Option<Vec<Uuid>>,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
-    pub trashed_at: Option<NaiveDateTime>,
-    pub deleted_at: Option<NaiveDateTime>,
-}
+// Note: SchemaInfo and ColumnInfo are now replaced by Record type
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonSchemaProperty {
@@ -102,11 +56,7 @@ pub struct JsonSchema {
 #[derive(Debug, thiserror::Error)]
 pub enum DescribeError {
     #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
-    #[error("Database manager error: {0}")]
-    DatabaseManager(#[from] DatabaseError),
-    #[error("Tenant error: {0}")]
-    Tenant(#[from] TenantError),
+    Database(#[from] DatabaseError),
     #[error("Schema not found: {0}")]
     NotFound(String),
     #[error("Schema already exists: {0}")]
@@ -133,21 +83,16 @@ pub const SYSTEM_FIELDS: &[&str] = &[
 ];
 
 pub struct DescribeService {
-    tenant_service: TenantService,
+    pool: PgPool,
 }
 
 impl DescribeService {
-    pub async fn new() -> Result<Self, DescribeError> {
-        let tenant_service = TenantService::new().await?;
-        Ok(Self {
-            tenant_service,
-        })
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
     /// Create new schema from JSON content
-    pub async fn create_one(&self, tenant_name: &str, schema_name: &str, json_content: Value) -> Result<SchemaInfo, DescribeError> {
-        let tenant_pool = self.tenant_service.get_tenant_pool(tenant_name).await?;
-        
+    pub async fn create_one(&self, schema_name: &str, json_content: Value) -> Result<Record, DescribeError> {
         // Validate schema protection
         self.validate_schema_protection(schema_name)?;
         
@@ -155,151 +100,130 @@ impl DescribeService {
         let json_schema = self.parse_json_schema(json_content.clone())?;
         let table_name = json_schema.table.as_deref().unwrap_or(schema_name);
         
-        // Check if schema already exists
-        if self.schema_exists(&tenant_pool, schema_name).await? {
+        // Check if schema already exists using Repository
+        let schemas_repo = Repository::new("schemas", self.pool.clone());
+        if self.schema_exists(&schemas_repo, schema_name).await? {
             return Err(DescribeError::AlreadyExists(schema_name.to_string()));
         }
         
         // Start transaction for atomic operation
-        let mut tx = tenant_pool.begin().await?;
+        let mut tx = self.pool.begin().await.map_err(DatabaseError::Sqlx)?;
         
         // Generate and execute DDL
         let ddl = self.generate_create_table_ddl(table_name, &json_schema)?;
-        sqlx::query(&ddl).execute(&mut *tx).await?;
+        sqlx::query(&ddl).execute(&mut *tx).await.map_err(DatabaseError::Sqlx)?;
         
-        // Insert schema metadata
+        // Create schema record
         let json_checksum = self.generate_json_checksum(&json_content.to_string());
-        let schema_info = self.insert_schema_record(&mut tx, schema_name, table_name, &json_schema, &json_checksum).await?;
+        let mut schema_record = Record::new();
+        schema_record
+            .set("name", schema_name)
+            .set("table_name", table_name)
+            .set("status", "active")
+            .set("definition", serde_json::to_value(&json_schema)?)
+            .set("field_count", json_schema.properties.len().to_string())
+            .set("json_checksum", json_checksum);
         
-        // Insert column metadata
-        self.insert_column_records(&mut tx, schema_name, &json_schema).await?;
+        // Insert schema using Repository (we'll need to handle transaction separately for now)
+        // For now, let's commit transaction and use Repository
+        tx.commit().await.map_err(DatabaseError::Sqlx)?;
         
-        tx.commit().await?;
-        Ok(schema_info)
+        let created_schema = schemas_repo.create_one(schema_record).await?;
+        
+        // Insert column records
+        let columns_repo = Repository::new("columns", self.pool.clone());
+        self.create_column_records(&columns_repo, schema_name, &json_schema).await?;
+        
+        Ok(created_schema)
     }
 
     /// Get schema by name
-    pub async fn select_one(&self, tenant_name: &str, schema_name: &str) -> Result<Option<SchemaInfo>, DescribeError> {
-        let tenant_pool = self.tenant_service.get_tenant_pool(tenant_name).await?;
+    pub async fn select_one(&self, schema_name: &str) -> Result<Option<Record>, DescribeError> {
+        use crate::filter::FilterData;
         
-        let row = sqlx::query!(
-            r#"
-            SELECT id, name, table_name, status, definition, field_count, json_checksum,
-                   access_read, access_edit, access_full, access_deny,
-                   created_at, updated_at, trashed_at, deleted_at
-            FROM schemas 
-            WHERE name = $1 AND deleted_at IS NULL
-            "#,
-            schema_name
-        )
-        .fetch_optional(&tenant_pool)
-        .await?;
+        let schemas_repo = Repository::new("schemas", self.pool.clone());
+        let filter = FilterData {
+            where_clause: Some(serde_json::json!({ "name": schema_name })),
+            ..Default::default()
+        };
         
-        Ok(row.map(|r| SchemaInfo {
-            id: r.id,
-            name: r.name,
-            table_name: r.table_name,
-            status: r.status,
-            definition: r.definition,
-            field_count: r.field_count,
-            json_checksum: r.json_checksum,
-            access_read: r.access_read,
-            access_edit: r.access_edit,
-            access_full: r.access_full,
-            access_deny: r.access_deny,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-            trashed_at: r.trashed_at,
-            deleted_at: r.deleted_at,
-        }))
+        let results = schemas_repo.select_any(filter).await?;
+        Ok(results.into_iter().next())
     }
 
     /// Get schema by name, return 404 error if not found
-    pub async fn select_one_404(&self, tenant_name: &str, schema_name: &str) -> Result<SchemaInfo, DescribeError> {
-        self.select_one(tenant_name, schema_name).await?
+    pub async fn select_404(&self, schema_name: &str) -> Result<Record, DescribeError> {
+        self.select_one(schema_name).await?
             .ok_or_else(|| DescribeError::NotFound(schema_name.to_string()))
     }
 
     /// Update existing schema from JSON content
-    pub async fn update_one(&self, tenant_name: &str, schema_name: &str, json_content: Value) -> Result<SchemaInfo, DescribeError> {
-        let tenant_pool = self.tenant_service.get_tenant_pool(tenant_name).await?;
-        
+    pub async fn update_404(&self, schema_name: &str, json_content: Value) -> Result<Record, DescribeError> {
         // Validate schema protection
         self.validate_schema_protection(schema_name)?;
         
         // Parse and validate JSON Schema
         let json_schema = self.parse_json_schema(json_content.clone())?;
         let json_checksum = self.generate_json_checksum(&json_content.to_string());
-        let field_count = json_schema.properties.len();
         
-        let row = sqlx::query!(
-            r#"
-            UPDATE schemas
-            SET definition = $1, field_count = $2, json_checksum = $3, updated_at = NOW()
-            WHERE name = $4 AND deleted_at IS NULL
-            RETURNING id, name, table_name, status, definition, field_count, json_checksum,
-                      access_read, access_edit, access_full, access_deny,
-                      created_at, updated_at, trashed_at, deleted_at
-            "#,
-            serde_json::to_value(&json_schema)?,
-            field_count.to_string(),
-            json_checksum,
-            schema_name
-        )
-        .fetch_optional(&tenant_pool)
-        .await?;
+        // Create updates record
+        let mut updates = Record::new();
+        updates
+            .set("definition", serde_json::to_value(&json_schema)?)
+            .set("field_count", json_schema.properties.len().to_string())
+            .set("json_checksum", json_checksum);
+
+        // Use Repository to update by name
+        let schemas_repo = Repository::new("schemas", self.pool.clone());
+        use crate::filter::FilterData;
+        let filter = FilterData {
+            where_clause: Some(serde_json::json!({ "name": schema_name })),
+            ..Default::default()
+        };
         
-        match row {
-            Some(r) => Ok(SchemaInfo {
-                id: r.id,
-                name: r.name,
-                table_name: r.table_name,
-                status: r.status,
-                definition: r.definition,
-                field_count: r.field_count,
-                json_checksum: r.json_checksum,
-                access_read: r.access_read,
-                access_edit: r.access_edit,
-                access_full: r.access_full,
-                access_deny: r.access_deny,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-                trashed_at: r.trashed_at,
-                deleted_at: r.deleted_at,
-            }),
-            None => Err(DescribeError::NotFound(schema_name.to_string()))
-        }
+        // Find existing schema
+        let results = schemas_repo.select_any(filter).await?;
+        let existing_schema = results.into_iter().next()
+            .ok_or_else(|| DescribeError::NotFound(schema_name.to_string()))?;
+            
+        // Update using the schema ID
+        let schema_id = existing_schema.id().ok_or_else(|| 
+            DescribeError::InvalidFormat("Schema missing ID".to_string()))?;
+        
+        let updated_schema = schemas_repo.update_404(schema_id, updates).await?;
+        Ok(updated_schema)
     }
 
-    /// Update schema by name, return 404 error if not found
-    pub async fn update_one_404(&self, tenant_name: &str, schema_name: &str, json_content: Value) -> Result<SchemaInfo, DescribeError> {
-        self.update_one(tenant_name, schema_name, json_content).await
-    }
 
     /// Delete schema (soft delete)
-    pub async fn delete_one(&self, tenant_name: &str, schema_name: &str) -> Result<bool, DescribeError> {
-        let tenant_pool = self.tenant_service.get_tenant_pool(tenant_name).await?;
-        
+    pub async fn delete_one(&self, schema_name: &str) -> Result<bool, DescribeError> {
         // Validate schema protection
         self.validate_schema_protection(schema_name)?;
         
-        let result = sqlx::query!(
-            r#"
-            UPDATE schemas
-            SET trashed_at = NOW(), updated_at = NOW()
-            WHERE name = $1 AND deleted_at IS NULL AND trashed_at IS NULL
-            "#,
-            schema_name
-        )
-        .execute(&tenant_pool)
-        .await?;
+        // Use Repository to soft delete by setting trashed_at
+        let schemas_repo = Repository::new("schemas", self.pool.clone());
+        use crate::filter::FilterData;
+        let filter = FilterData {
+            where_clause: Some(serde_json::json!({ 
+                "name": schema_name,
+                "deleted_at": null,
+                "trashed_at": null
+            })),
+            ..Default::default()
+        };
         
-        Ok(result.rows_affected() > 0)
+        // Create change record with soft delete timestamps
+        let change = Record::new()
+            .set("trashed_at", chrono::Utc::now().to_rfc3339())
+            .set("updated_at", chrono::Utc::now().to_rfc3339());
+        
+        let updated_records = schemas_repo.update_any(filter, change).await?;
+        Ok(!updated_records.is_empty())
     }
 
     /// Delete schema by name, return 404 error if not found
-    pub async fn delete_one_404(&self, tenant_name: &str, schema_name: &str) -> Result<(), DescribeError> {
-        let deleted = self.delete_one(tenant_name, schema_name).await?;
+    pub async fn delete_404(&self, schema_name: &str) -> Result<(), DescribeError> {
+        let deleted = self.delete_one(schema_name).await?;
         if deleted {
             Ok(())
         } else {
