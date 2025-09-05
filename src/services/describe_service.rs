@@ -69,18 +69,6 @@ pub enum DescribeError {
     JsonParse(#[from] serde_json::Error),
 }
 
-// System fields that are automatically added to all tables
-pub const SYSTEM_FIELDS: &[&str] = &[
-    "id",
-    "access_read",
-    "access_edit",
-    "access_full",
-    "access_deny",
-    "created_at",
-    "updated_at",
-    "trashed_at",
-    "deleted_at",
-];
 
 pub struct DescribeService {
     pool: PgPool,
@@ -110,11 +98,7 @@ impl DescribeService {
             return Err(DescribeError::AlreadyExists(schema_name.to_string()));
         }
 
-        // Generate DDL and create table using Repository
-        let ddl = self.generate_create_table_ddl(table_name, &json_schema)?;
-        schemas_repo.execute_ddl(&ddl).await?;
-
-        // Create schema record
+        // Create schema record - Ring 6 observer will handle CREATE TABLE DDL automatically
         let json_checksum = self.generate_json_checksum(&json_content.to_string());
         let mut schema_record = Record::new();
         schema_record
@@ -125,8 +109,7 @@ impl DescribeService {
             .set("field_count", json_schema.properties.len().to_string())
             .set("json_checksum", json_checksum);
 
-        // Insert schema using Repository
-
+        // Insert schema - CreateSchemaDdl observer will execute CREATE TABLE
         let created_schema = schemas_repo.create_one(schema_record).await?;
 
         // Insert column records
@@ -238,7 +221,215 @@ impl DescribeService {
         }
     }
 
+    // ========================================
+    // COLUMN OPERATIONS
+    // ========================================
+
+    /// Create new column for existing schema from JSON Schema property
+    pub async fn create_column(
+        &self,
+        schema_name: &str,
+        column_name: &str,
+        json_property: Value,
+        is_required: bool,
+    ) -> Result<Record, DescribeError> {
+        // Validate schema protection
+        self.validate_schema_protection(schema_name)?;
+
+        // Verify schema exists
+        let schemas_repo = Repository::new("schemas", self.pool.clone());
+        if !self.schema_exists(&schemas_repo, schema_name).await? {
+            return Err(DescribeError::NotFound(format!("Schema '{}' not found", schema_name)));
+        }
+
+        // Parse JSON Schema property into JsonSchemaProperty
+        let column_definition: JsonSchemaProperty = serde_json::from_value(json_property)?;
+
+        // Check if column already exists
+        let columns_repo = Repository::new("columns", self.pool.clone());
+        if self.column_exists(&columns_repo, schema_name, column_name).await? {
+            return Err(DescribeError::AlreadyExists(format!("Column '{}' already exists in schema '{}'", column_name, schema_name)));
+        }
+
+        // Parse column definition into Record - CreateColumnDdl observer will handle ALTER TABLE ADD COLUMN
+        let column_record = self.parse_column_definition(schema_name, column_name, &column_definition, is_required)?;
+        
+        let created_column = columns_repo.create_one(column_record).await?;
+        Ok(created_column)
+    }
+
+    /// Get column by schema and name
+    pub async fn select_column(&self, schema_name: &str, column_name: &str) -> Result<Option<Record>, DescribeError> {
+        use crate::filter::FilterData;
+
+        let columns_repo = Repository::new("columns", self.pool.clone());
+        let filter = FilterData {
+            where_clause: Some(serde_json::json!({ 
+                "schema_name": schema_name,
+                "column_name": column_name,
+                "deleted_at": null
+            })),
+            ..Default::default()
+        };
+
+        let results = columns_repo.select_any(filter).await?;
+        Ok(results.into_iter().next())
+    }
+
+    /// Get column by schema and name, return 404 error if not found
+    pub async fn select_column_404(&self, schema_name: &str, column_name: &str) -> Result<Record, DescribeError> {
+        self.select_column(schema_name, column_name)
+            .await?
+            .ok_or_else(|| DescribeError::NotFound(format!("Column '{}' not found in schema '{}'", column_name, schema_name)))
+    }
+
+    /// Update existing column from JSON Schema property
+    pub async fn update_column_404(
+        &self,
+        schema_name: &str,
+        column_name: &str,
+        json_property: Value,
+        is_required: Option<bool>,
+    ) -> Result<Record, DescribeError> {
+        // Validate schema protection
+        self.validate_schema_protection(schema_name)?;
+
+        // Parse JSON Schema property into JsonSchemaProperty
+        let column_definition: JsonSchemaProperty = serde_json::from_value(json_property)?;
+
+        // Find existing column
+        let existing_column = self.select_column_404(schema_name, column_name).await?;
+        
+        // Determine required status - use provided value or keep existing
+        let required = is_required.unwrap_or_else(|| {
+            existing_column.get("is_required")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        });
+
+        // Parse updated column definition - UpdateColumnDdl observer will handle safe ALTER COLUMN operations
+        let updated_record = self.parse_column_definition(schema_name, column_name, &column_definition, required)?;
+
+        // Get column ID for update
+        let column_id = existing_column
+            .id()
+            .ok_or_else(|| DescribeError::InvalidFormat("Column record missing ID".to_string()))?;
+
+        let columns_repo = Repository::new("columns", self.pool.clone());
+        let updated_column = columns_repo.update_404(column_id, updated_record).await?;
+        Ok(updated_column)
+    }
+
+    /// Delete column (soft delete)
+    pub async fn delete_column(&self, schema_name: &str, column_name: &str) -> Result<bool, DescribeError> {
+        // Validate schema protection
+        self.validate_schema_protection(schema_name)?;
+
+        let columns_repo = Repository::new("columns", self.pool.clone());
+        use crate::filter::FilterData;
+        let filter = FilterData {
+            where_clause: Some(serde_json::json!({
+                "schema_name": schema_name,
+                "column_name": column_name,
+                "deleted_at": null,
+                "trashed_at": null
+            })),
+            ..Default::default()
+        };
+
+        // Create change record with soft delete timestamps - DeleteColumnDdl observer will handle ALTER TABLE DROP COLUMN
+        let mut change = Record::new();
+        change
+            .set("trashed_at", chrono::Utc::now().to_rfc3339())
+            .set("updated_at", chrono::Utc::now().to_rfc3339());
+
+        let updated_records = columns_repo.update_any(filter, change).await?;
+        Ok(!updated_records.is_empty())
+    }
+
+    /// Delete column by schema and name, return 404 error if not found
+    pub async fn delete_column_404(&self, schema_name: &str, column_name: &str) -> Result<(), DescribeError> {
+        let deleted = self.delete_column(schema_name, column_name).await?;
+        if deleted {
+            Ok(())
+        } else {
+            Err(DescribeError::NotFound(format!("Column '{}' not found in schema '{}'", column_name, schema_name)))
+        }
+    }
+
     // Private helper methods
+
+    /// Parse a single JSON Schema property into a column Record
+    fn parse_column_definition(
+        &self,
+        schema_name: &str,
+        column_name: &str,
+        column_definition: &JsonSchemaProperty,
+        is_required: bool,
+    ) -> Result<Record, DescribeError> {
+        let pg_type = self.json_schema_type_to_postgres(column_definition);
+        
+        let mut column_record = Record::new();
+        column_record
+            .set("schema_name", schema_name)
+            .set("column_name", column_name)
+            .set("pg_type", pg_type)
+            .set("json_type", &column_definition.property_type)
+            .set("is_required", is_required)
+            .set("is_array", column_definition.property_type == "array");
+
+        // Store format if present
+        if let Some(format) = &column_definition.format {
+            column_record.set("format", format);
+        }
+
+        if let Some(default) = &column_definition.default {
+            column_record.set("default_value", default.to_string());
+        }
+        
+        // Handle numeric constraints (minimum/maximum) or string constraints (minLength/maxLength)
+        match column_definition.property_type.as_str() {
+            "string" => {
+                if let Some(min_len) = column_definition.min_length {
+                    column_record.set("minimum", min_len as f64);
+                }
+                if let Some(max_len) = column_definition.max_length {
+                    column_record.set("maximum", max_len as f64);
+                }
+            }
+            "integer" | "number" => {
+                if let Some(min) = column_definition.minimum {
+                    column_record.set("minimum", min);
+                }
+                if let Some(max) = column_definition.maximum {
+                    column_record.set("maximum", max);
+                }
+            }
+            _ => {
+                // For other types, store whatever constraints are present
+                if let Some(min) = column_definition.minimum {
+                    column_record.set("minimum", min);
+                }
+                if let Some(max) = column_definition.maximum {
+                    column_record.set("maximum", max);
+                }
+            }
+        }
+        
+        if let Some(pattern) = &column_definition.pattern {
+            column_record.set("pattern_regex", pattern);
+        }
+        if let Some(enum_vals) = &column_definition.enum_values {
+            column_record.set("enum_values", enum_vals);
+        }
+        if let Some(desc) = &column_definition.description {
+            column_record.set("description", desc);
+        }
+        
+        // Skip x-monk-relationship for now as requested
+        
+        Ok(column_record)
+    }
 
     async fn schema_exists(&self, schemas_repo: &Repository, schema_name: &str) -> Result<bool, DescribeError> {
         use crate::filter::FilterData;
@@ -252,6 +443,22 @@ impl DescribeService {
         };
 
         let results = schemas_repo.select_any(filter).await?;
+        Ok(!results.is_empty())
+    }
+
+    async fn column_exists(&self, columns_repo: &Repository, schema_name: &str, column_name: &str) -> Result<bool, DescribeError> {
+        use crate::filter::FilterData;
+        
+        let filter = FilterData {
+            where_clause: Some(serde_json::json!({ 
+                "schema_name": schema_name,
+                "column_name": column_name,
+                "deleted_at": null 
+            })),
+            ..Default::default()
+        };
+
+        let results = columns_repo.select_any(filter).await?;
         Ok(!results.is_empty())
     }
 
@@ -284,56 +491,6 @@ impl DescribeService {
         let mut hasher = Sha256::new();
         hasher.update(json_content.as_bytes());
         format!("{:x}", hasher.finalize())
-    }
-
-    fn generate_create_table_ddl(
-        &self,
-        table_name: &str,
-        json_schema: &JsonSchema,
-    ) -> Result<String, DescribeError> {
-        let empty_vec = vec![];
-        let required = json_schema.required.as_ref().unwrap_or(&empty_vec);
-
-        let mut ddl = format!("CREATE TABLE \"{}\" (\n", table_name);
-
-        // Standard PaaS fields
-        ddl += "    \"id\" UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n";
-        ddl += "    \"access_read\" UUID[] DEFAULT '{}',\n";
-        ddl += "    \"access_edit\" UUID[] DEFAULT '{}',\n";
-        ddl += "    \"access_full\" UUID[] DEFAULT '{}',\n";
-        ddl += "    \"access_deny\" UUID[] DEFAULT '{}',\n";
-        ddl += "    \"created_at\" TIMESTAMP DEFAULT now() NOT NULL,\n";
-        ddl += "    \"updated_at\" TIMESTAMP DEFAULT now() NOT NULL,\n";
-        ddl += "    \"trashed_at\" TIMESTAMP,\n";
-        ddl += "    \"deleted_at\" TIMESTAMP";
-
-        // Schema-specific fields
-        for (field_name, property) in &json_schema.properties {
-            // Skip system fields
-            if SYSTEM_FIELDS.contains(&field_name.as_str()) {
-                continue;
-            }
-
-            let pg_type = self.json_schema_type_to_postgres(property);
-            let is_required = required.contains(field_name);
-            let nullable = if is_required { " NOT NULL" } else { "" };
-
-            let default_value = if let Some(default) = &property.default {
-                match default {
-                    Value::String(s) => format!(" DEFAULT '{}'", s.replace('\'', "''")),
-                    Value::Number(n) => format!(" DEFAULT {}", n),
-                    Value::Bool(b) => format!(" DEFAULT {}", b),
-                    _ => String::new(),
-                }
-            } else {
-                String::new()
-            };
-
-            ddl += &format!(",\n    \"{}\" {}{}{}", field_name, pg_type, nullable, default_value);
-        }
-
-        ddl += "\n);";
-        Ok(ddl)
     }
 
     fn json_schema_type_to_postgres(&self, property: &JsonSchemaProperty) -> &str {
@@ -374,71 +531,8 @@ impl DescribeService {
         let required_fields = json_schema.required.as_ref().unwrap_or(&empty_vec);
 
         for (column_name, column_definition) in &json_schema.properties {
-            let pg_type = self.json_schema_type_to_postgres(column_definition);
             let is_required = required_fields.contains(column_name);
-            
-            // Extract relationship data
-            let (relationship_type, related_schema, related_column, relationship_name, cascade_delete, required_relationship) = 
-                if let Some(rel) = &column_definition.x_monk_relationship {
-                    (
-                        Some(rel.relationship_type.clone()),
-                        Some(rel.schema.clone()),
-                        Some(rel.column.as_deref().unwrap_or("id").to_string()),
-                        Some(rel.name.clone()),
-                        rel.cascade_delete,
-                        rel.required,
-                    )
-                } else {
-                    (None, None, None, None, None, None)
-                };
-
-            let mut column_record = Record::new();
-            column_record
-                .set("schema_name", schema_name)
-                .set("column_name", column_name)
-                .set("pg_type", pg_type)
-                .set("is_required", is_required)
-                .set("is_array", column_definition.property_type == "array");
-
-            if let Some(default) = &column_definition.default {
-                column_record.set("default_value", default.to_string());
-            }
-            if let Some(min) = column_definition.minimum {
-                column_record.set("minimum", min);
-            }
-            if let Some(max) = column_definition.maximum {
-                column_record.set("maximum", max);
-            }
-            if let Some(pattern) = &column_definition.pattern {
-                column_record.set("pattern_regex", pattern);
-            }
-            if let Some(enum_vals) = &column_definition.enum_values {
-                column_record.set("enum_values", enum_vals);
-            }
-            if let Some(desc) = &column_definition.description {
-                column_record.set("description", desc);
-            }
-            
-            // Set relationship fields if present
-            if let Some(rel_type) = relationship_type {
-                column_record.set("relationship_type", rel_type);
-            }
-            if let Some(rel_schema) = related_schema {
-                column_record.set("related_schema", rel_schema);
-            }
-            if let Some(rel_column) = related_column {
-                column_record.set("related_column", rel_column);
-            }
-            if let Some(rel_name) = relationship_name {
-                column_record.set("relationship_name", rel_name);
-            }
-            if let Some(cascade) = cascade_delete {
-                column_record.set("cascade_delete", cascade);
-            }
-            if let Some(req_rel) = required_relationship {
-                column_record.set("required_relationship", req_rel);
-            }
-
+            let column_record = self.parse_column_definition(schema_name, column_name, column_definition, is_required)?;
             columns_repo.create_one(column_record).await?;
         }
 

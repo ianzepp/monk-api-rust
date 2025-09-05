@@ -135,7 +135,7 @@ fn find_routes() -> Router {
 }
 
 fn describe_routes() -> Router {
-    use axum::routing::{delete, post, put};
+    use axum::routing::{delete, patch, post};
     use handlers::protected::describe;
 
     Router::new()
@@ -144,8 +144,16 @@ fn describe_routes() -> Router {
             "/describe/:schema",
             get(describe::schema_get)
                 .post(describe::schema_post)
-                .put(describe::schema_put)
+                .patch(describe::schema_patch)
                 .delete(describe::schema_delete),
+        )
+        // Column definition management
+        .route(
+            "/describe/:schema/:column",
+            get(describe::column_get)
+                .post(describe::column_post)
+                .patch(describe::column_patch)
+                .delete(describe::column_delete),
         )
         // No middleware here - applied at the /api level
 }

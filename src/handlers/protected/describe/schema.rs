@@ -6,9 +6,9 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::services::describe_service::DescribeService;
-use crate::middleware::{TenantPool, AuthUser, ApiResponse, ApiResult};
 use crate::error::ApiError;
+use crate::middleware::{ApiResponse, ApiResult, AuthUser, TenantPool};
+use crate::services::describe_service::DescribeService;
 
 #[derive(Debug, Deserialize)]
 pub struct DescribeQuery {
@@ -17,12 +17,12 @@ pub struct DescribeQuery {
 }
 
 /// GET /api/describe/:schema - Get JSON Schema definition for a schema
-/// 
+///
 /// Returns the YAML JSON Schema definition that was used to create the PostgreSQL table.
 /// This allows monk-cli to retrieve schema definitions for validation and tooling.
-/// 
-/// @param schema - The schema name (like "users", "products")  
-/// @returns YAML JSON Schema definition or 404 if schema doesn't exist
+///
+/// @param schema - The schema name (like "users", "products")
+/// @returns JSON Schema definition or 404 if schema doesn't exist
 pub async fn get(
     Path(schema): Path<String>,
     Query(query): Query<DescribeQuery>,
@@ -31,22 +31,18 @@ pub async fn get(
 ) -> ApiResult<Value> {
     // Create DescribeService and get schema
     let service = DescribeService::new(pool);
-    let schema_record = service.select_404(&schema).await
-        .map_err(|e| match e {
-            crate::services::describe_service::DescribeError::NotFound(_) => 
-                ApiError::not_found(format!("Schema '{}' not found", schema)),
-            _ => ApiError::internal_server_error("Failed to retrieve schema")
-        })?;
+    let schema_record = service.select_404(&schema).await?;
 
     // Return the definition field from the schema record
-    let definition = schema_record.get("definition")
+    let definition = schema_record
+        .get("definition")
         .ok_or_else(|| ApiError::internal_server_error("Schema definition missing"))?;
-    
+
     Ok(ApiResponse::success(definition.clone()))
 }
 
 /// POST /api/describe/:schema - Create a new schema from JSON Schema definition
-/// 
+///
 /// Accepts a JSON Schema definition and:
 /// 1. Validates schema against JSON Schema specification
 /// 2. Generates PostgreSQL CREATE TABLE statement
@@ -60,22 +56,17 @@ pub async fn post(
     Extension(auth_user): Extension<AuthUser>,
 ) -> ApiResult<Value> {
     let service = DescribeService::new(pool);
-    let created_schema = service.create_one(&schema, payload).await
-        .map_err(|e| match e {
-            crate::services::describe_service::DescribeError::AlreadyExists(_) => 
-                ApiError::conflict(format!("Schema '{}' already exists", schema)),
-            crate::services::describe_service::DescribeError::Protected(_) => 
-                ApiError::bad_request(format!("Schema '{}' is protected and cannot be created", schema)),
-            crate::services::describe_service::DescribeError::InvalidFormat(msg) => 
-                ApiError::bad_request(format!("Invalid schema format: {}", msg)),
-            _ => ApiError::internal_server_error("Failed to create schema")
-        })?;
+    let created_schema = service.create_one(&schema, payload).await?;
 
-    Ok(ApiResponse::success(serde_json::to_value(created_schema)?))
+    Ok(ApiResponse::success(json!({
+        "created": true,
+        "schema": schema,
+        "message": "Schema created successfully"
+    })))
 }
 
 /// PATCH /api/describe/:schema - Update an existing schema definition
-/// 
+///
 /// Accepts a JSON Schema definition and:
 /// 1. Validates new schema definition
 /// 2. Compares with existing schema for compatibility
@@ -90,22 +81,17 @@ pub async fn patch(
     Extension(auth_user): Extension<AuthUser>,
 ) -> ApiResult<Value> {
     let service = DescribeService::new(pool);
-    let updated_schema = service.update_404(&schema, payload).await
-        .map_err(|e| match e {
-            crate::services::describe_service::DescribeError::NotFound(_) => 
-                ApiError::not_found(format!("Schema '{}' not found", schema)),
-            crate::services::describe_service::DescribeError::Protected(_) => 
-                ApiError::bad_request(format!("Schema '{}' is protected and cannot be updated", schema)),
-            crate::services::describe_service::DescribeError::InvalidFormat(msg) => 
-                ApiError::bad_request(format!("Invalid schema format: {}", msg)),
-            _ => ApiError::internal_server_error("Failed to update schema")
-        })?;
+    let updated_schema = service.update_404(&schema, payload).await?;
 
-    Ok(ApiResponse::success(serde_json::to_value(updated_schema)?))
+    Ok(ApiResponse::success(json!({
+        "updated": true,
+        "schema": schema,
+        "message": "Schema updated successfully"
+    })))
 }
 
 /// DELETE /api/describe/:schema - Delete a schema and its associated table
-/// 
+///
 /// WARNING: This is destructive and will:
 /// 1. Drop the PostgreSQL table (losing all data)
 /// 2. Remove schema definition from registry
@@ -118,24 +104,13 @@ pub async fn delete(
 ) -> ApiResult<Value> {
     // Create DescribeService and delete schema
     let service = DescribeService::new(pool);
-    let success = service.delete_one(&schema).await
-        .map_err(|e| match e {
-            crate::services::describe_service::DescribeError::NotFound(_) => 
-                ApiError::not_found(format!("Schema '{}' not found", schema)),
-            crate::services::describe_service::DescribeError::Protected(_) => 
-                ApiError::bad_request(format!("Schema '{}' is protected and cannot be deleted", schema)),
-            _ => ApiError::internal_server_error("Failed to delete schema")
-        })?;
+    service.delete_404(&schema).await?;
 
-    if success {
-        Ok(ApiResponse::success(json!({
-            "deleted": true,
-            "schema": schema,
-            "message": "Schema marked for deletion"
-        })))
-    } else {
-        Err(ApiError::not_found(format!("Schema '{}' not found", schema)))
-    }
+    Ok(ApiResponse::success(json!({
+        "deleted": true,
+        "schema": schema,
+        "message": "Schema marked for deletion"
+    })))
 }
 
 /*
@@ -143,15 +118,15 @@ SCHEMA MANAGEMENT IN RUST:
 
 This endpoint is crucial for the monk ecosystem because:
 
-1. **monk-cli Compatibility**: 
+1. **monk-cli Compatibility**:
    - `monk meta select schema users` needs to get the YAML definition
    - Used for validation, documentation, and tooling
-   
+
 2. **Schema Evolution**:
    - Shows current schema version
    - Enables schema migration planning
    - Maintains history of schema changes
-   
+
 3. **Integration**:
    - Other services can introspect available schemas
    - API documentation can be auto-generated
@@ -164,7 +139,7 @@ pub async fn get(
     Path(schema): Path<String>,
     Extension(db): Extension<DatabasePool>,
 ) -> Result<Json<Value>, AppError> {
-    // Query schema registry table  
+    // Query schema registry table
     let schema_def = sqlx::query_as!(
         SchemaDefinition,
         "SELECT name, definition, created_at FROM schema_registry WHERE name = $1",
@@ -172,7 +147,7 @@ pub async fn get(
     )
     .fetch_optional(&db)
     .await?;
-    
+
     match schema_def {
         Some(def) => Ok(Json(def.definition)),
         None => Err(AppError::NotFound(format!("Schema '{}' not found", schema)))
@@ -182,12 +157,12 @@ pub async fn get(
 
 This provides the same functionality as your TypeScript version but with:
 - Compile-time SQL query validation
-- Type-safe database operations  
+- Type-safe database operations
 - Zero-cost JSON serialization
 - Memory safety guarantees
 
 Key Files We'll Need:
 - schema_validator.rs: JSON Schema validation logic
-- ddl_generator.rs: PostgreSQL table generation  
+- ddl_generator.rs: PostgreSQL table generation
 - schema_registry.rs: In-memory schema caching
 */

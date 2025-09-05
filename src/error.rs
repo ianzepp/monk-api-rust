@@ -263,6 +263,32 @@ impl From<crate::database::manager::DatabaseError> for ApiError {
     }
 }
 
+impl From<crate::services::describe_service::DescribeError> for ApiError {
+    fn from(err: crate::services::describe_service::DescribeError) -> Self {
+        match err {
+            crate::services::describe_service::DescribeError::NotFound(name) => {
+                ApiError::not_found(format!("Schema '{}' not found", name))
+            }
+            crate::services::describe_service::DescribeError::AlreadyExists(name) => {
+                ApiError::conflict(format!("Schema '{}' already exists", name))
+            }
+            crate::services::describe_service::DescribeError::Protected(name) => {
+                ApiError::bad_request(format!("Schema '{}' is protected", name))
+            }
+            crate::services::describe_service::DescribeError::InvalidFormat(msg) => {
+                ApiError::bad_request(format!("Invalid schema format: {}", msg))
+            }
+            crate::services::describe_service::DescribeError::Database(db_err) => {
+                // Delegate to existing DatabaseError conversion
+                ApiError::from(db_err)
+            }
+            crate::services::describe_service::DescribeError::JsonParse(json_err) => {
+                ApiError::bad_request(format!("JSON parsing error: {}", json_err))
+            }
+        }
+    }
+}
+
 impl From<crate::observer::error::ObserverError> for ApiError {
     fn from(err: crate::observer::error::ObserverError) -> Self {
         match err {
