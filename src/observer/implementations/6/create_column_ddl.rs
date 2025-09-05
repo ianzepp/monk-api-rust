@@ -34,8 +34,11 @@ impl Observer for CreateColumnDdl {
 impl Ring6 for CreateColumnDdl {
     async fn execute(&self, context: &mut ObserverContext) -> Result<(), ObserverError> {
         // Get the newly inserted column record from context
-        let records = context.get_records()
-            .ok_or_else(|| ObserverError::ValidationError("No records in context".to_string()))?;
+        let records = &context.records;
+        
+        if records.is_empty() {
+            return Ok(()); // No records to process
+        }
 
         for record in records {
             // Extract column information from the inserted record
@@ -80,7 +83,7 @@ impl CreateColumnDdl {
     async fn is_initial_schema_creation(&self, context: &ObserverContext, schema_name: &str) -> Result<bool, ObserverError> {
         // Check if this is part of initial schema creation by looking at context metadata
         // If we're in the middle of creating a schema, skip individual column DDL
-        if let Some(metadata) = context.get_metadata() {
+        if let Some(metadata) = context.get_metadata::<serde_json::Map<String, serde_json::Value>>() {
             if let Some(creating_schema) = metadata.get("creating_schema") {
                 if let Some(current_schema) = creating_schema.as_str() {
                     return Ok(current_schema == schema_name);
@@ -91,12 +94,13 @@ impl CreateColumnDdl {
     }
     
     async fn get_table_name_for_schema(&self, context: &ObserverContext, schema_name: &str) -> Result<String, ObserverError> {
-        let pool = context.get_pool()
-            .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+        // Get database pool directly (same pattern as Ring 5 observers)
+        let pool = crate::database::manager::DatabaseManager::main_pool().await
+            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
             
         let row = sqlx::query("SELECT table_name FROM schemas WHERE name = $1 AND deleted_at IS NULL")
             .bind(schema_name)
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .map_err(|e| ObserverError::DatabaseError(format!("Failed to get table name for schema {}: {}", schema_name, e)))?;
             

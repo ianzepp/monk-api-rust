@@ -40,8 +40,7 @@ impl Ring5 for DeleteSqlExecutor {
         }
 
         // Get database connection
-        let pool = DatabaseManager::main_pool().await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        let pool = ctx.get_pool();
         
         let mut results = Vec::new();
         let mut successful_operations = 0;
@@ -97,8 +96,7 @@ impl DeleteSqlExecutor {
         let row = sqlx::query(&query)
             .bind(record_id.to_string())
             .fetch_one(pool)
-            .await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+            .await.map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
         
         self.row_to_json(row)
     }

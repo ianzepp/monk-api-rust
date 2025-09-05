@@ -40,8 +40,7 @@ impl Ring5 for SelectSqlExecutor {
         tracing::info!("Executing SELECT operation for schema: {}", ctx.schema_name);
         
         // Get database connection
-        let pool = DatabaseManager::main_pool().await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        let pool = ctx.get_pool();
         
         // Build SQL query using Filter system
         let mut filter = Filter::new(&ctx.schema_name)
@@ -61,8 +60,7 @@ impl Ring5 for SelectSqlExecutor {
             query = bind_param(query, param);
         }
         
-        let rows = query.fetch_all(&pool).await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        let rows = query.fetch_all(pool).await.map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
         
         let query_time = query_start.elapsed();
         

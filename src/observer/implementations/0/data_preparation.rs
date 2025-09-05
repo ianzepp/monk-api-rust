@@ -26,7 +26,7 @@ impl Observer for DataPreparationObserver {
     
     fn applies_to_operation(&self, op: Operation) -> bool {
         // Only applies to operations that need existing data
-        matches!(op, Operation::Update | Operation::Delete)
+        matches!(op, Operation::Update | Operation::Delete | Operation::Revert)
     }
     
     fn applies_to_schema(&self, _schema: &str) -> bool {
@@ -37,17 +37,11 @@ impl Observer for DataPreparationObserver {
 #[async_trait]
 impl Ring0 for DataPreparationObserver {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
-        if ctx.records.is_empty() {
-            tracing::debug!("No records to prepare data for");
-            return Ok(());
-        }
-
-        tracing::info!("Preparing data for {} records in schema: {}", ctx.records.len(), ctx.schema_name);
-
+        // Only process operations that need existing data
         match ctx.operation {
-            Operation::Update => self.prepare_update_data(ctx).await,
-            Operation::Delete => self.prepare_delete_data(ctx).await,
-            Operation::Revert => self.prepare_revert_data(ctx).await,
+            Operation::Update | Operation::Delete | Operation::Revert => {
+                self.prepare_data_with_existing(ctx).await
+            }
             _ => {
                 tracing::debug!("No data preparation needed for operation: {:?}", ctx.operation);
                 Ok(())
@@ -57,162 +51,96 @@ impl Ring0 for DataPreparationObserver {
 }
 
 impl DataPreparationObserver {
-    /// Prepare data for UPDATE operations - load existing records and merge changes
-    async fn prepare_update_data(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
-        // Skip data loading if records already have original data loaded
-        let needs_preparation = ctx.records.iter().any(|record| record.original().is_none());
-        if !needs_preparation {
-            tracing::debug!("UPDATE records already have original data loaded, skipping data preparation");
+    /// Unified data preparation for all operations that need existing data
+    async fn prepare_data_with_existing(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
+        if ctx.records.is_empty() {
+            tracing::debug!("No records to prepare data for");
             return Ok(());
         }
 
-        // Extract all IDs from Records that need data loading
+        tracing::info!("Preparing data for {} records in schema: {}", ctx.records.len(), ctx.schema_name);
+
+        // Extract all IDs from records
         let ids: Vec<Uuid> = ctx.records.iter()
             .filter_map(|record| record.id())
             .collect();
 
         if ids.is_empty() {
-            return Err(ObserverError::ValidationError("UPDATE operations require record IDs".to_string()));
+            return Err(ObserverError::ValidationError(
+                format!("{:?} operations require record IDs", ctx.operation)
+            ));
         }
 
-        // Use Repository to bulk load existing records
+        // Create repository and query existing records
         let repository = self.create_repository(&ctx.schema_name).await?;
-        let existing_records = repository.select_ids(ids).await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-
-        // Convert existing records to lookup map by ID
-        let mut existing_by_id: HashMap<Uuid, crate::database::record::Record> = HashMap::new();
-        for record in existing_records {
-            if let Some(record_id) = record.id() {
-                existing_by_id.insert(record_id, record);
+        let existing_records = match ctx.operation {
+            Operation::Revert => {
+                // Query for trashed records only
+                let filter_data = FilterData {
+                    where_clause: Some(serde_json::json!({ 
+                        "id": { "$in": ids },
+                        "trashed_at": { "$ne": null }
+                    })),
+                    ..Default::default()
+                };
+                repository.select_any(filter_data).await
+                    .map_err(|e| ObserverError::DatabaseError(e.to_string()))?
             }
-        }
-
-        // Merge existing data with changes for each Record
-        let mut successful_preparations = 0;
-
-        for record in &mut ctx.records {
-            if let Some(record_id) = record.id() {
-                if let Some(existing_record) = existing_by_id.get(&record_id) {
-                    // Inject existing data into the record for change tracking
-                    record.inject(existing_record.to_hashmap());
-                    successful_preparations += 1;
-                } else {
-                    let error = ObserverError::ValidationError(format!("Record {} not found for update", record_id));
-                    tracing::error!("Failed to find existing record for update: {}", error);
-                    ctx.errors.push(error);
-                }
-            } else {
-                let error = ObserverError::ValidationError("Record missing ID for update".to_string());
-                tracing::error!("UPDATE record missing ID: {}", error);
-                ctx.errors.push(error);
+            _ => {
+                // Query for normal records (UPDATE, DELETE)
+                repository.select_ids(ids).await
+                    .map_err(|e| ObserverError::DatabaseError(e.to_string()))?
             }
-        }
-
-        tracing::info!(
-            "UPDATE data preparation completed: {}/{} successful",
-            successful_preparations, ctx.records.len()
-        );
-
-        Ok(())
-    }
-
-    /// Prepare data for DELETE operations - load existing records for soft delete
-    async fn prepare_delete_data(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
-        // Skip data loading if records already have original data loaded
-        let needs_preparation = ctx.records.iter().any(|record| record.original().is_none());
-        if !needs_preparation {
-            tracing::debug!("DELETE records already have original data loaded, skipping data preparation");
-            return Ok(());
-        }
-
-        // Extract all IDs from Records that need data loading
-        let ids: Vec<Uuid> = ctx.records.iter()
-            .filter_map(|record| record.id())
-            .collect();
-
-        if ids.is_empty() {
-            return Err(ObserverError::ValidationError("DELETE operations require record IDs".to_string()));
-        }
-
-        // Use Repository to bulk load existing records (excluding trashed)
-        let repository = self.create_repository(&ctx.schema_name).await?;
-        let existing_records = repository.select_ids(ids).await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
-
-        // Set delete operation on existing records (no conversion needed)
-        let mut prepared_records = Vec::new();
-        let successful_preparations = existing_records.len();
-
-        for mut record in existing_records {
-            record.set_operation(Operation::Delete);
-            prepared_records.push(record);
-        }
-
-        // Replace records with prepared versions
-        ctx.records = prepared_records;
-
-        tracing::info!(
-            "DELETE data preparation completed: {}/{} successful",
-            successful_preparations, ctx.records.len()
-        );
-
-        Ok(())
-    }
-
-    /// Prepare data for REVERT operations - load existing soft-deleted records
-    async fn prepare_revert_data(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
-        // Skip data loading if records already have original data loaded
-        let needs_preparation = ctx.records.iter().any(|record| record.original().is_none());
-        if !needs_preparation {
-            tracing::debug!("REVERT records already have original data loaded, skipping data preparation");
-            return Ok(());
-        }
-
-        // Extract all IDs from Records that need data loading
-        let ids: Vec<Uuid> = ctx.records.iter()
-            .filter_map(|record| record.id())
-            .collect();
-
-        if ids.is_empty() {
-            return Err(ObserverError::ValidationError("REVERT operations require record IDs".to_string()));
-        }
-
-        // Use Repository to load trashed records with filter
-        let repository = self.create_repository(&ctx.schema_name).await?;
-        let filter_data = FilterData {
-            where_clause: Some(serde_json::json!({ 
-                "id": { "$in": ids },
-                "trashed_at": { "$ne": null } // Only trashed records
-            })),
-            // Note: Repository query should handle trashed records via where clause
-            ..Default::default()
         };
 
-        let existing_records = repository.select_any(filter_data).await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        // Process records based on operation
+        match ctx.operation {
+            Operation::Update => {
+                // For UPDATE: inject existing data into current records for change tracking
+                let existing_by_id: HashMap<Uuid, Record> = existing_records.into_iter()
+                    .filter_map(|r| r.id().map(|id| (id, r)))
+                    .collect();
 
-        // Set update operation on existing trashed records for revert (no conversion needed)
-        let mut prepared_records = Vec::new();
-        let successful_preparations = existing_records.len();
+                let mut successful_preparations = 0;
+                for record in &mut ctx.records {
+                    if let Some(record_id) = record.id() {
+                        if let Some(existing_record) = existing_by_id.get(&record_id) {
+                            // Skip if record already has original data
+                            if record.original().is_none() {
+                                record.inject(existing_record.to_hashmap());
+                                successful_preparations += 1;
+                            }
+                        } else {
+                            ctx.errors.push(ObserverError::ValidationError(
+                                format!("Record {} not found for update", record_id)
+                            ));
+                        }
+                    }
+                }
 
-        for mut record in existing_records {
-            record.set_operation(Operation::Update);
-            prepared_records.push(record);
+                tracing::info!("UPDATE data preparation: {}/{} records prepared", 
+                    successful_preparations, ctx.records.len());
+            }
+            Operation::Delete | Operation::Revert => {
+                // For DELETE/REVERT: replace context records with existing records
+                let operation = ctx.operation; // Capture before moving
+                ctx.records = existing_records.into_iter()
+                    .map(|mut record| {
+                        record.set_operation(operation);
+                        record
+                    })
+                    .collect();
+
+                tracing::info!("{:?} data preparation: {} records prepared", 
+                    operation, ctx.records.len());
+            }
+            _ => unreachable!() // Already filtered in execute()
         }
-
-        // Replace records with prepared versions
-        ctx.records = prepared_records;
-
-        tracing::info!(
-            "REVERT data preparation completed: {}/{} successful",
-            successful_preparations, ctx.records.len()
-        );
 
         Ok(())
     }
 
-    /// Create a generic Repository for the schema to leverage existing bulk query methods
+    /// Create a Repository for the schema
     async fn create_repository(&self, schema_name: &str) -> Result<Repository, ObserverError> {
         use crate::database::manager::DatabaseManager;
         

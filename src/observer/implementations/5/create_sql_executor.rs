@@ -39,9 +39,8 @@ impl Ring5 for CreateSqlExecutor {
             return Ok(());
         }
 
-        // Get database connection
-        let pool = DatabaseManager::main_pool().await
-            .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
+        // Get tenant-specific database connection from context
+        let pool = ctx.get_pool();
         
         let mut results = Vec::new();
         let mut successful_operations = 0;

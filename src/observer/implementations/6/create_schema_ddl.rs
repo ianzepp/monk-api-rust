@@ -34,7 +34,7 @@ impl Observer for CreateSchemaDdl {
 impl Ring6 for CreateSchemaDdl {
     async fn execute(&self, context: &mut ObserverContext) -> Result<(), ObserverError> {
         // Get the newly inserted schema record from context
-        let records = context.get_records()
+        let records = &context.records
             .ok_or_else(|| ObserverError::ValidationError("No records in context".to_string()))?;
 
         for record in records {

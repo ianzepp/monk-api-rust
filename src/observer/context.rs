@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::any::{Any, TypeId};
 use std::time::Instant;
 use serde_json::Value;
+use sqlx::PgPool;
 use crate::observer::traits::{ObserverRing, Operation};
 use crate::observer::error::{ObserverError, ObserverWarning};
 use crate::database::record::Record;
@@ -17,6 +18,9 @@ pub struct ObserverContext {
     
     // Records - using modern Record pattern
     pub records: Vec<Record>,
+    
+    // Database connection - tenant-specific pool for all database operations
+    pool: PgPool,
     
     // SELECT-specific: Query filter data (for SELECT operations)
     pub filter_data: Option<FilterData>,
@@ -41,12 +45,14 @@ impl ObserverContext {
     pub fn new(
         operation: Operation,
         schema_name: String, 
-        records: Vec<Record>
+        records: Vec<Record>,
+        pool: PgPool
     ) -> Self {
         Self {
             operation,
             schema_name,
             records,
+            pool,
             filter_data: None,
             result: None,
             metadata: HashMap::new(),
@@ -61,11 +67,13 @@ impl ObserverContext {
     pub fn new_select(
         schema_name: String,
         filter_data: FilterData,
+        pool: PgPool
     ) -> Self {
         Self {
             operation: Operation::Select,
             schema_name,
             records: Vec::new(), // Empty until Ring 5 populates from database
+            pool,
             filter_data: Some(filter_data),
             result: None,
             metadata: HashMap::new(),
@@ -153,6 +161,11 @@ impl ObserverContext {
         self.records.iter()
             .any(|record| record.has_changes())
     }
+
+    /// Get tenant-specific database pool for SQL operations
+    pub fn get_pool(&self) -> &PgPool {
+        &self.pool
+    }
 }
 
 // Make ObserverContext cloneable for async rings (they get read-only copy)
@@ -162,6 +175,7 @@ impl Clone for ObserverContext {
             operation: self.operation,
             schema_name: self.schema_name.clone(),
             records: self.records.clone(),
+            pool: self.pool.clone(),
             filter_data: self.filter_data.clone(),
             result: self.result.clone(),
             metadata: HashMap::new(), // Metadata is not cloneable - async observers get fresh context

@@ -34,7 +34,7 @@ impl Observer for UpdateSchemaDdl {
 impl Ring6 for UpdateSchemaDdl {
     async fn execute(&self, context: &mut ObserverContext) -> Result<(), ObserverError> {
         // Get the updated schema record from context
-        let records = context.get_records()
+        let records = &context.records
             .ok_or_else(|| ObserverError::ValidationError("No records in context".to_string()))?;
 
         for record in records {
