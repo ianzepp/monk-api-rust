@@ -350,8 +350,13 @@ impl Repository {
             return Ok(Vec::new());
         }
 
-        // Set operation type for all records
-        for record in &mut records {
+        // Validate IDs and set operation type for all records
+        for (index, record) in records.iter_mut().enumerate() {
+            if !record.has_id() {
+                return Err(DatabaseError::InvalidOperation(
+                    format!("UPDATE requires all records to have IDs. Record at index {} is missing an ID", index)
+                ));
+            }
             record.set_operation(Operation::Update);
         }
 
@@ -383,8 +388,13 @@ impl Repository {
             return Ok(Vec::new());
         }
 
-        // Set operation type for all records
-        for record in &mut records {
+        // Validate IDs and set operation type for all records
+        for (index, record) in records.iter_mut().enumerate() {
+            if !record.has_id() {
+                return Err(DatabaseError::InvalidOperation(
+                    format!("DELETE requires all records to have IDs. Record at index {} is missing an ID", index)
+                ));
+            }
             record.set_operation(Operation::Delete);
         }
 
@@ -431,20 +441,4 @@ impl Repository {
         self.delete_all(records).await
     }
 
-    /// Update multiple records by IDs with the same changes
-    pub async fn update_ids_with_record(&self, ids: Vec<Uuid>, updates: Record) -> Result<Vec<Record>, DatabaseError> {
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
-        
-        let mut records = self.select_ids(ids).await?;
-        let update_data = updates.to_hashmap();
-        
-        for record in &mut records {
-            record.apply_changes(update_data.clone());
-            record.set_operation(Operation::Update);
-        }
-        
-        self.update_all(records).await
-    }
 }

@@ -23,6 +23,9 @@ pub enum DatabaseError {
     #[error("Query error: {0}")]
     QueryError(String),
 
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
     

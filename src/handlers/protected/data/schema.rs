@@ -93,26 +93,9 @@ pub async fn delete(
     // Parse JSON array payload into Records
     let records = Record::from_json_array(payload)?;
 
-    // Extract IDs from records
-    let mut ids = Vec::new();
-    for (index, record) in records.iter().enumerate() {
-        if let Some(id) = record.get_id() {
-            ids.push(id);
-        } else {
-            return Err(ApiError::bad_request(
-                format!("DELETE requires all records to have IDs. Record at index {} is missing an ID", index)
-            ));
-        }
-    }
-
-    if ids.is_empty() {
-        // No IDs to delete
-        return Ok(ApiResponse::success(serde_json::json!([])));
-    }
-
-    // Delete records by IDs (handles soft delete via observer pipeline)
+    // Delete records directly (handles soft delete and ID validation via repository/observer pipeline)
     let repository = Repository::new(&schema, pool);
-    let deleted_records = repository.delete_ids(ids).await?;
+    let deleted_records = repository.delete_all(records).await?;
 
     // Return array of deleted records (with soft delete timestamps)
     let data = Record::to_api_output_array(deleted_records);
@@ -130,16 +113,7 @@ pub async fn patch(
     // Parse JSON array payload into Records
     let records = Record::from_json_array(payload)?;
 
-    // Validate that ALL records have IDs (required for PATCH)
-    for (index, record) in records.iter().enumerate() {
-        if !record.has_id() {
-            return Err(ApiError::bad_request(
-                format!("PATCH requires all records to have IDs. Record at index {} is missing an ID", index)
-            ));
-        }
-    }
-
-    // Update all records (will 404 if any ID doesn't exist via observer pipeline)
+    // Update all records (ID validation and 404 handling via repository/observer pipeline)
     let repository = Repository::new(&schema, pool);
     let updated_records = repository.update_all(records).await?;
 
