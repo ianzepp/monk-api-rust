@@ -418,7 +418,7 @@ impl Record {
         self.fields.clone()
     }
 
-    /// Convert to serde_json::Map (for StatefulRecord compatibility)
+    /// Convert to serde_json::Map
     pub fn to_map(&self) -> Map<String, Value> {
         self.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }

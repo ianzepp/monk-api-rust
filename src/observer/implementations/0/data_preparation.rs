@@ -126,7 +126,7 @@ impl DataPreparationObserver {
             return Ok(());
         }
 
-        // Extract all IDs from StatefulRecords that need data loading
+        // Extract all IDs from Records that need data loading
         let ids: Vec<Uuid> = ctx.records.iter()
             .filter_map(|record| record.id)
             .collect();
@@ -140,7 +140,7 @@ impl DataPreparationObserver {
         let existing_records = repository.select_ids(ids).await
             .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
 
-        // Convert existing records to StatefulRecords for deletion
+        // Convert existing records to Records for deletion
         let mut prepared_records = Vec::new();
         let mut successful_preparations = 0;
 
@@ -179,7 +179,7 @@ impl DataPreparationObserver {
             return Ok(());
         }
 
-        // Extract all IDs from StatefulRecords that need data loading
+        // Extract all IDs from Records that need data loading
         let ids: Vec<Uuid> = ctx.records.iter()
             .filter_map(|record| record.id)
             .collect();
@@ -202,7 +202,7 @@ impl DataPreparationObserver {
         let existing_records = repository.select_any(filter_data).await
             .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
 
-        // Convert existing trashed records to StatefulRecords for revert
+        // Convert existing trashed records to Records for revert
         let mut prepared_records = Vec::new();
         let mut successful_preparations = 0;
 

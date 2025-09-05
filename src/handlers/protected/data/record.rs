@@ -12,7 +12,6 @@ use crate::database::record::Record;
 use crate::error::ApiError;
 use crate::middleware::{TenantPool, AuthUser, ApiResponse, ApiResult};
 
-use super::utils::metadata_options_from_query;
 
 #[derive(Debug, Deserialize)]
 pub struct RecordQuery {

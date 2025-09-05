@@ -15,7 +15,7 @@ pub struct ObserverContext {
     pub operation: Operation,
     pub schema_name: String,
     
-    // Records - much simpler than StatefulRecord!
+    // Records - using modern Record pattern
     pub records: Vec<Record>,
     
     // SELECT-specific: Query filter data (for SELECT operations)
