@@ -11,48 +11,6 @@ use crate::observer::context::ObserverContext;
 use crate::observer::error::{ObserverError, ObserverResult};
 use crate::filter::FilterData;
 
-/// Result type for pipeline-level operations that preserves Record context
-/// Used for internal pipeline-to-pipeline operations
-#[derive(Debug)]
-pub struct PipelineRecordResult {
-    pub success: bool,
-    pub records: Vec<crate::database::record::Record>,
-    pub errors: Vec<ObserverError>,
-    pub warnings: Vec<String>,
-    pub execution_time: Duration,
-    pub rings_executed: Vec<ObserverRing>,
-}
-
-impl PipelineRecordResult {
-    /// Convert from ObserverResult, reconstructing Records from JSON
-    pub fn from_observer_result(result: ObserverResult) -> Self {
-        let records = if let Some(json_results) = result.result {
-            json_results.into_iter()
-                .filter_map(|value| {
-                    if let Value::Object(map) = value {
-                        // Reconstruct Record from JSON
-                        Some(crate::database::record::Record::from_sql_data(
-                            map.into_iter().collect()
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        Self {
-            success: result.success,
-            records,
-            errors: result.errors,
-            warnings: result.warnings,
-            execution_time: result.execution_time,
-            rings_executed: result.rings_executed,
-        }
-    }
-}
 
 /// High-performance observer pipeline with compile-time registration
 /// Executes observers in ring order with selective execution and async optimization
@@ -247,44 +205,6 @@ impl ObserverPipeline {
         self.handle_pipeline_result(result)
     }
 
-    // ========================================
-    // Pipeline-level bulk methods (Record in/out)
-    // ========================================
-
-    /// Create multiple records - Record in, Record out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn create_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Create, schema_name, records, pool).await?;
-        Ok(PipelineRecordResult::from_observer_result(result))
-    }
-
-    /// Update multiple records - Record in, Record out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn update_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Update, schema_name, records, pool).await?;
-        Ok(PipelineRecordResult::from_observer_result(result))
-    }
-
-    /// Delete multiple records - Record in, Record out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn delete_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Delete, schema_name, records, pool).await?;
-        Ok(PipelineRecordResult::from_observer_result(result))
-    }
-
-    /// Revert multiple records - Record in, Record out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn revert_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Revert, schema_name, records, pool).await?;
-        Ok(PipelineRecordResult::from_observer_result(result))
-    }
-
-    /// Select records with filter - returns Record out
-    /// For internal pipeline-to-pipeline operations
-    pub async fn select_any(&self, schema_name: String, filter_data: FilterData) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_select(schema_name, filter_data, pool).await?;
-        Ok(PipelineRecordResult::from_observer_result(result))
-    }
 
 
     /// Handle pipeline result - check for errors and convert to Records

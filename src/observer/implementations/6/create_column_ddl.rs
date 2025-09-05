@@ -61,7 +61,7 @@ impl Ring6 for CreateColumnDdl {
             let table_name = self.get_table_name_for_schema(context, schema_name).await?;
             
             // Generate ALTER TABLE ADD COLUMN DDL
-            let ddl = self.generate_add_column_ddl(&table_name, record)?;
+            let ddl = self.generate_add_column_ddl(&table_name, &record.to_map())?;
             
             // Execute DDL
             let pool = context.get_pool();

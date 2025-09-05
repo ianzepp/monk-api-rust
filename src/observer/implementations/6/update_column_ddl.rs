@@ -76,7 +76,7 @@ impl Ring6 for UpdateColumnDdl {
             // - Adding/removing DEFAULT values
             // - Changing column comments/descriptions
             
-            let ddl_operations = self.generate_safe_column_updates(&table_name, record)?;
+            let ddl_operations = self.generate_safe_column_updates(&table_name, &record.to_map())?;
             
             if ddl_operations.is_empty() {
                 tracing::debug!("No safe DDL operations for column '{}' update", column_name);
