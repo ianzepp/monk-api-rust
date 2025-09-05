@@ -9,6 +9,7 @@ mod database;
 mod error;
 mod filter;
 mod handlers;
+mod middleware;
 mod observer;
 
 #[tokio::main]
@@ -43,19 +44,30 @@ async fn main() {
 
 fn app() -> Router {
     Router::new()
-        // Public
+        // Public routes (no auth required)
         .route("/", get(root))
         .route("/health", get(health))
-        // Public auth routes
+        // Public auth routes (no auth required)
         .merge(auth_public_routes())
-        // Protected API (auth skipped for MVP)
-        .merge(data_routes())
-        .merge(find_routes())
-        .merge(meta_routes())
-        .merge(auth_routes())
+        // Protected API routes (all require auth middleware)
+        .nest("/api", protected_api_routes())
         // Global middleware
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+}
+
+/// All protected API routes under /api/* with shared middleware
+fn protected_api_routes() -> Router {
+    Router::new()
+        // Merge all protected route groups (without /api prefix since we're nested)
+        .merge(data_routes())
+        .merge(find_routes()) 
+        .merge(meta_routes())
+        .merge(auth_routes())
+        // Apply shared middleware stack to ALL /api/* routes
+        .layer(middleware::from_fn(crate::middleware::validate_user_middleware))      // 3rd: Validate user in tenant DB
+        .layer(middleware::from_fn(crate::middleware::validate_tenant_middleware))    // 2nd: Validate tenant + get DB pool
+        .layer(middleware::from_fn(crate::middleware::jwt_auth_middleware))           // 1st: Extract JWT claims
 }
 
 fn auth_public_routes() -> Router {
@@ -77,11 +89,12 @@ fn auth_routes() -> Router {
     use handlers::protected::auth;
 
     Router::new()
-        // Session management for authenticated users
-        .route("/api/auth/whoami", get(auth::session_whoami))
-        .route("/api/auth/sudo", post(auth::session_sudo))
-        .route("/api/auth/session/refresh", put(auth::session_refresh))
-        .route("/api/auth/session", delete(auth::session_logout))
+        // Session management for authenticated users - routes without /api prefix since we're nested
+        .route("/auth/whoami", get(auth::session_whoami))
+        .route("/auth/sudo", post(auth::session_sudo))
+        .route("/auth/session/refresh", put(auth::session_refresh))
+        .route("/auth/session", delete(auth::session_logout))
+        // No middleware here - applied at the /api level
 }
 
 fn data_routes() -> Router {
@@ -89,9 +102,9 @@ fn data_routes() -> Router {
     use handlers::protected::data;
 
     Router::new()
-        // Schema-level operations (collection)
+        // Schema-level operations (collection) - routes without /api prefix since we're nested
         .route(
-            "/api/data/:schema",
+            "/data/:schema",
             get(data::schema_get)
                 .post(data::schema_post)
                 .put(data::schema_put)
@@ -100,14 +113,15 @@ fn data_routes() -> Router {
         )
         // Record-level operations (individual)
         .route(
-            "/api/data/:schema/:id",
+            "/data/:schema/:id",
             get(data::record_get)
                 .put(data::record_put)
                 .patch(data::record_patch)
                 .delete(data::record_delete),
         )
         // Record restore endpoint
-        .route("/api/data/:schema/:id/restore", post(data::record_restore))
+        .route("/data/:schema/:id/restore", post(data::record_restore))
+        // No middleware here - applied at the /api level
 }
 
 fn find_routes() -> Router {
@@ -115,8 +129,9 @@ fn find_routes() -> Router {
     use handlers::protected::find;
 
     Router::new()
-        // Find/search operations with filters
-        .route("/api/find/:schema", post(find::find_post).delete(find::find_delete))
+        // Find/search operations with filters - routes without /api prefix since we're nested
+        .route("/find/:schema", post(find::find_post).delete(find::find_delete))
+        // No middleware here - applied at the /api level
 }
 
 fn meta_routes() -> Router {
@@ -124,14 +139,15 @@ fn meta_routes() -> Router {
     use handlers::protected::meta;
 
     Router::new()
-        // Schema definition management
+        // Schema definition management - routes without /api prefix since we're nested
         .route(
-            "/api/meta/:schema",
+            "/meta/:schema",
             get(meta::schema_get)
                 .post(meta::schema_post)
                 .put(meta::schema_put)
                 .delete(meta::schema_delete),
         )
+        // No middleware here - applied at the /api level
 }
 
 async fn root() -> axum::response::Json<Value> {

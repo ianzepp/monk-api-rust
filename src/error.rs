@@ -1,4 +1,5 @@
 // HTTP API Error Types
+use axum::{response::IntoResponse, http::StatusCode, Json};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -303,3 +304,11 @@ impl std::fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+// Automatic HTTP response conversion for Axum
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let status = StatusCode::from_u16(self.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (status, Json(self.to_json())).into_response()
+    }
+}

@@ -191,6 +191,19 @@ impl Repository {
         }
     }
 
+    /// Select all records with optional pagination
+    pub async fn select_all(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<Record>, DatabaseError> {
+        let filter_data = FilterData {
+            select: None,
+            where_clause: None,
+            order: None,
+            limit,
+            offset,
+        };
+        self.select_any(filter_data).await
+    }
+
+    /// Select records with filter criteria
     pub async fn select_any(&self, filter_data: FilterData) -> Result<Vec<Record>, DatabaseError> {
         // Use pipeline's Record-aware method (handles all conversion internally)
         let pipeline = Self::create_pipeline();

@@ -1,24 +1,21 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Extension, Path, Query},
     http::StatusCode,
     response::{IntoResponse, Json},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::api::format::record_to_api_value;
-use crate::database::dynamic::DynamicRepository;
-use crate::database::manager::DatabaseManager;
+use crate::database::repository::Repository;
+use crate::database::record::Record;
 use crate::filter::FilterData;
+use crate::error::ApiError;
+use crate::middleware::{TenantPool, AuthUser, ApiResponse, ApiResult};
 
-use crate::observer::stateful_record::{RecordOperation, StatefulRecord};
-
-use super::utils::{metadata_options_from_query, resolve_tenant_db};
+use super::utils::metadata_options_from_query;
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    /// Tenant database name (e.g., tenant_007314608dd04169). If omitted, falls back to MONK_TENANT_DB env.
-    pub tenant: Option<String>,
     /// Include metadata sections. Examples: meta=true, meta=system,permissions
     pub meta: Option<String>,
     /// Pagination (optional)
@@ -27,181 +24,123 @@ pub struct ListQuery {
 }
 
 /// GET /api/data/:schema - List all records in a schema
-pub async fn get(Path(schema): Path<String>, Query(query): Query<ListQuery>) -> impl IntoResponse {
-    // Resolve tenant database
-    let tenant_db = match resolve_tenant_db(&query.tenant) {
-        Ok(db) => db,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
-                .into_response()
-        }
-    };
+pub async fn get(
+    Path(schema): Path<String>, 
+    Query(query): Query<ListQuery>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // Use Repository with clean select_all method
+    let repository = Repository::new(&schema, pool);
+    let records = repository.select_all(
+        query.limit.map(|l| l.max(0) as i32),
+        query.offset.map(|o| o.max(0) as i32)
+    ).await?;
 
-    let pool = match DatabaseManager::tenant_pool(&tenant_db).await {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"success": false, "error": format!("database error: {}", e) })),
-            )
-                .into_response()
-        }
-    };
+    // Use Record's ergonomic API output helper and return clean data
+    let data = Record::to_api_output_array(records);
+    Ok(ApiResponse::success(data))
+}
 
-    // Build filter data with standard conditions for non-deleted records
+/// POST /api/data/:schema - Create multiple records in the schema (bulk operation)
+pub async fn post(
+    Path(schema): Path<String>,
+    Query(query): Query<ListQuery>,
+    Json(payload): Json<Value>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // Parse JSON array payload into Records
+    let records = Record::from_json_array(payload)?;
+
+    // Use Repository to create all records (handles observer pipeline)
+    let repository = Repository::new(&schema, pool);
+    let created_records = repository.create_all(records).await?;
+
+    // Return array of created records with 201 Created status
+    let data = Record::to_api_output_array(created_records);
+    Ok(ApiResponse::created(data))
+}
+
+/// PUT /api/data/:schema - Bulk update records with filter criteria
+pub async fn put(
+    Path(schema): Path<String>,
+    Query(query): Query<ListQuery>,
+    Json(payload): Json<Value>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // Expect payload with filter and updates
+    // { "filter": { "status": "draft" }, "updates": { "status": "published", "published_at": "2024-01-15" } }
+    let filter_data = payload.get("filter")
+        .and_then(|f| serde_json::from_value::<FilterData>(f.clone()).ok())
+        .unwrap_or_default();
+    
+    let updates = payload.get("updates")
+        .ok_or_else(|| ApiError::bad_request("Missing 'updates' field in payload"))?
+        .clone();
+
+    // Fetch matching records
+    let repository = Repository::new(&schema, pool);
+    let mut records = repository.select_any(filter_data).await?;
+
+    // Apply updates to each record
+    let updates_map = Record::json_to_hashmap(updates)?;
+    for record in &mut records {
+        record.apply_changes(updates_map.clone());
+    }
+
+    // Bulk update all records (handles observer pipeline)
+    let updated_records = repository.update_all(records).await?;
+
+    // Return array of updated records
+    let data = Record::to_api_output_array(updated_records);
+    Ok(ApiResponse::success(data))
+}
+
+/// DELETE /api/data/:schema - Bulk delete records with filter criteria
+pub async fn delete(
+    Path(schema): Path<String>,
+    Query(query): Query<ListQuery>,
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // For DELETE, filter criteria can come from query params or request body
+    // For now, support basic query params (limit/offset) and match all
     let filter_data = FilterData {
-        select: None, // Select all columns
-        where_clause: Some(json!({
-            "$and": [
-                { "trashed_at": { "$is": null } },
-                { "deleted_at": { "$is": null } }
-            ]
-        })),
+        select: None,
+        where_clause: None, // Could be extended to accept filter query params
         order: None,
         limit: query.limit.map(|l| l.max(0) as i32),
         offset: query.offset.map(|o| o.max(0) as i32),
     };
 
-    // Use DynamicRepository instead of raw SQL
-    let repository = DynamicRepository::new(&schema, pool);
-    let record_maps = match repository.select_any(filter_data).await {
-        Ok(maps) => maps,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"success": false, "error": format!("query failed: {}", e) })),
-            )
-                .into_response()
-        }
-    };
+    // Fetch records to delete
+    let repository = Repository::new(&schema, pool);
+    let records = repository.select_any(filter_data).await?;
 
-    // Convert maps to StatefulRecord instances
-    let mut records = Vec::new();
-    for map in record_maps {
-        let mut rec = StatefulRecord::existing(map, None, RecordOperation::NoChange);
-        rec.extract_system_metadata();
-        records.push(rec);
+    if records.is_empty() {
+        // No records found to delete
+        return Ok(ApiResponse::success(serde_json::json!([])));
     }
 
-    let options = metadata_options_from_query(query.meta.as_deref());
-    let data: Vec<Value> =
-        records.iter().map(|r| record_to_api_value(r, &schema, &options)).collect();
+    // Bulk delete records (handles soft delete via observer pipeline)
+    let deleted_records = repository.delete_all(records).await?;
 
-    Json(json!({ "success": true, "data": data })).into_response()
+    // Return array of deleted records (with soft delete timestamps)
+    let data = Record::to_api_output_array(deleted_records);
+    Ok(ApiResponse::success(data))
 }
 
-/// POST /api/data/:schema - Create a new record in the schema
-pub async fn post(
-    Path(schema): Path<String>,
-    Query(query): Query<ListQuery>,
-    Json(payload): Json<Value>,
-) -> impl IntoResponse {
-    // Resolve tenant database
-    let tenant_db = match resolve_tenant_db(&query.tenant) {
-        Ok(db) => db,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
-        }
-    };
-
-    // TODO: Implement record creation through observer pipeline
-    // 1. Validate input data against schema
-    // 2. Create StatefulRecord with RecordOperation::Create
-    // 3. Execute through observer pipeline
-    // 4. Insert into database
-    // 5. Return created record with metadata
-
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("POST /api/data/{} not yet implemented", schema),
-            "message": "This will create new records in the schema"
-        })),
-    )
-}
-
-/// PUT /api/data/:schema - Bulk update records in the schema
-pub async fn put(
-    Path(schema): Path<String>,
-    Query(query): Query<ListQuery>,
-    Json(payload): Json<Value>,
-) -> impl IntoResponse {
-    let _tenant_db = match resolve_tenant_db(&query.tenant) {
-        Ok(db) => db,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
-        }
-    };
-
-    // TODO: Implement bulk update
-    // 1. Parse filter criteria from payload
-    // 2. Fetch matching records
-    // 3. Apply updates through observer pipeline
-    // 4. Execute bulk update query
-    // 5. Return updated records
-
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("PUT /api/data/{} not yet implemented", schema),
-            "message": "This will perform bulk updates on records"
-        })),
-    )
-}
-
-/// DELETE /api/data/:schema - Bulk delete records in the schema
-pub async fn delete(
-    Path(schema): Path<String>,
-    Query(query): Query<ListQuery>,
-) -> impl IntoResponse {
-    let _tenant_db = match resolve_tenant_db(&query.tenant) {
-        Ok(db) => db,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
-        }
-    };
-
-    // TODO: Implement bulk delete (soft delete by default)
-    // 1. Parse filter criteria from query params
-    // 2. Fetch matching records
-    // 3. Set deleted_at timestamp through observer pipeline
-    // 4. Execute soft delete update
-    // 5. Return count of deleted records
-
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("DELETE /api/data/{} not yet implemented", schema),
-            "message": "This will perform bulk soft deletes on records"
-        })),
-    )
-}
-
-/// PATCH /api/data/:schema - Partial bulk update of records
+/// PATCH /api/data/:schema - Partial bulk update of records (same as PUT)
 pub async fn patch(
     Path(schema): Path<String>,
     Query(query): Query<ListQuery>,
     Json(payload): Json<Value>,
-) -> impl IntoResponse {
-    let _tenant_db = match resolve_tenant_db(&query.tenant) {
-        Ok(db) => db,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": msg })))
-        }
-    };
-
-    // TODO: Implement partial bulk update
-    // Similar to PUT but only updates specified fields
-
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("PATCH /api/data/{} not yet implemented", schema),
-            "message": "This will perform partial bulk updates on records"
-        })),
-    )
+    Extension(TenantPool(pool)): Extension<TenantPool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> ApiResult<Value> {
+    // PATCH is identical to PUT for schema-level operations
+    // Both are partial updates with filter criteria
+    put(Path(schema), Query(query), Json(payload), Extension(pool), Extension(auth_user)).await
 }
