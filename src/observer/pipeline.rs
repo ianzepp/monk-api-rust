@@ -93,10 +93,11 @@ impl ObserverPipeline {
         operation: Operation,
         schema_name: String,
         records: Vec<crate::database::record::Record>,
+        pool: sqlx::PgPool,
     ) -> Result<ObserverResult, ObserverError> {
         let start_time = Instant::now();
         
-        let mut ctx = ObserverContext::new(operation, schema_name, records);
+        let mut ctx = ObserverContext::new(operation, schema_name, records, pool);
         
         // Get relevant rings for this operation (performance optimization)
         let relevant_rings = ObserverRing::for_operation(&operation);
@@ -149,10 +150,11 @@ impl ObserverPipeline {
         &self,
         schema_name: String,
         filter_data: FilterData,
+        pool: sqlx::PgPool,
     ) -> Result<ObserverResult, ObserverError> {
         let start_time = Instant::now();
         
-        let mut ctx = ObserverContext::new_select(schema_name, filter_data);
+        let mut ctx = ObserverContext::new_select(schema_name, filter_data, pool);
         
         // Get relevant rings for SELECT operation
         let relevant_rings = ObserverRing::for_operation(&Operation::Select);
@@ -207,9 +209,9 @@ impl ObserverPipeline {
 
     /// Create multiple records - Record in, Record out
     /// For Repository usage - now works directly with Records!
-    pub async fn create_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+    pub async fn create_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
         // Execute pipeline directly with Records - no conversion needed!
-        let result = self.execute_crud(Operation::Create, schema_name, records).await?;
+        let result = self.execute_crud(Operation::Create, schema_name, records, pool).await?;
         
         // Handle errors and extract Records
         self.handle_pipeline_result(result)
@@ -217,9 +219,9 @@ impl ObserverPipeline {
 
     /// Update multiple records - Record in, Record out  
     /// For Repository usage - now works directly with Records!
-    pub async fn update_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+    pub async fn update_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
         // Execute pipeline directly with Records - no conversion needed!
-        let result = self.execute_crud(Operation::Update, schema_name, records).await?;
+        let result = self.execute_crud(Operation::Update, schema_name, records, pool).await?;
         
         // Handle errors and extract Records
         self.handle_pipeline_result(result)
@@ -227,9 +229,9 @@ impl ObserverPipeline {
 
     /// Select records with filter - Record out
     /// For Repository usage - now works directly with Records!
-    pub async fn select_any_records(&self, schema_name: String, filter_data: FilterData) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+    pub async fn select_any_records(&self, schema_name: String, filter_data: FilterData, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
         // Execute pipeline - no conversion needed!
-        let result = self.execute_select(schema_name, filter_data).await?;
+        let result = self.execute_select(schema_name, filter_data, pool).await?;
         
         // Handle errors and extract Records
         self.handle_pipeline_result(result)
@@ -237,9 +239,9 @@ impl ObserverPipeline {
 
     /// Delete multiple records - Record in, Record out
     /// For Repository usage - now works directly with Records!
-    pub async fn delete_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+    pub async fn delete_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
         // Execute pipeline directly with Records - no conversion needed!
-        let result = self.execute_crud(Operation::Delete, schema_name, records).await?;
+        let result = self.execute_crud(Operation::Delete, schema_name, records, pool).await?;
         
         // Handle errors and extract Records
         self.handle_pipeline_result(result)
@@ -251,36 +253,36 @@ impl ObserverPipeline {
 
     /// Create multiple records - Record in, Record out
     /// For internal pipeline-to-pipeline operations
-    pub async fn create_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Create, schema_name, records).await?;
+    pub async fn create_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Create, schema_name, records, pool).await?;
         Ok(PipelineRecordResult::from_observer_result(result))
     }
 
     /// Update multiple records - Record in, Record out
     /// For internal pipeline-to-pipeline operations
-    pub async fn update_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Update, schema_name, records).await?;
+    pub async fn update_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Update, schema_name, records, pool).await?;
         Ok(PipelineRecordResult::from_observer_result(result))
     }
 
     /// Delete multiple records - Record in, Record out
     /// For internal pipeline-to-pipeline operations
-    pub async fn delete_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Delete, schema_name, records).await?;
+    pub async fn delete_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Delete, schema_name, records, pool).await?;
         Ok(PipelineRecordResult::from_observer_result(result))
     }
 
     /// Revert multiple records - Record in, Record out
     /// For internal pipeline-to-pipeline operations
-    pub async fn revert_all(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_crud(Operation::Revert, schema_name, records).await?;
+    pub async fn revert_all(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<PipelineRecordResult, ObserverError> {
+        let result = self.execute_crud(Operation::Revert, schema_name, records, pool).await?;
         Ok(PipelineRecordResult::from_observer_result(result))
     }
 
     /// Select records with filter - returns Record out
     /// For internal pipeline-to-pipeline operations
     pub async fn select_any(&self, schema_name: String, filter_data: FilterData) -> Result<PipelineRecordResult, ObserverError> {
-        let result = self.execute_select(schema_name, filter_data).await?;
+        let result = self.execute_select(schema_name, filter_data, pool).await?;
         Ok(PipelineRecordResult::from_observer_result(result))
     }
 

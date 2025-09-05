@@ -40,7 +40,7 @@ impl Ring5 for CreateSqlExecutor {
         }
 
         // Get tenant-specific database connection from context
-        let pool = ctx.get_pool();
+        let pool = ctx.get_pool().clone();
         
         let mut results = Vec::new();
         let mut successful_operations = 0;

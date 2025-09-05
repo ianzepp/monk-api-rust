@@ -1,7 +1,7 @@
 // Ring 6: Delete Column DDL Executor - handles ALTER TABLE DROP COLUMN after column record delete
 use async_trait::async_trait;
 use serde_json::{Value, Map};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
@@ -34,8 +34,11 @@ impl Observer for DeleteColumnDdl {
 impl Ring6 for DeleteColumnDdl {
     async fn execute(&self, context: &mut ObserverContext) -> Result<(), ObserverError> {
         // Get the updated/deleted column record from context
-        let records = &context.records
-            .ok_or_else(|| ObserverError::ValidationError("No records in context".to_string()))?;
+        let records = &context.records;
+        
+        if records.is_empty() {
+            return Ok(()); // No records to process
+        }
 
         for record in records {
             // Check if this record was soft deleted (trashed_at or deleted_at set)
@@ -68,8 +71,7 @@ impl Ring6 for DeleteColumnDdl {
             let ddl = format!("ALTER TABLE \"{}\" DROP COLUMN IF EXISTS \"{}\"", table_name, column_name);
             
             // Execute DDL
-            let pool = context.get_pool()
-                .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+            let pool = context.get_pool();
                 
             sqlx::query(&ddl)
                 .execute(pool)
@@ -85,8 +87,7 @@ impl Ring6 for DeleteColumnDdl {
 
 impl DeleteColumnDdl {
     async fn schema_exists_and_active(&self, context: &ObserverContext, schema_name: &str) -> Result<bool, ObserverError> {
-        let pool = context.get_pool()
-            .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+        let pool = context.get_pool();
             
         let result = sqlx::query(
             "SELECT COUNT(*) as count FROM schemas WHERE name = $1 AND deleted_at IS NULL AND trashed_at IS NULL"
@@ -101,8 +102,7 @@ impl DeleteColumnDdl {
     }
     
     async fn get_table_name_for_schema(&self, context: &ObserverContext, schema_name: &str) -> Result<String, ObserverError> {
-        let pool = context.get_pool()
-            .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+        let pool = context.get_pool();
             
         let row = sqlx::query("SELECT table_name FROM schemas WHERE name = $1 AND deleted_at IS NULL")
             .bind(schema_name)

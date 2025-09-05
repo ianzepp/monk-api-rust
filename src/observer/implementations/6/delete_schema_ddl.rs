@@ -34,8 +34,11 @@ impl Observer for DeleteSchemaDdl {
 impl Ring6 for DeleteSchemaDdl {
     async fn execute(&self, context: &mut ObserverContext) -> Result<(), ObserverError> {
         // Get the updated/deleted schema record from context
-        let records = &context.records
-            .ok_or_else(|| ObserverError::ValidationError("No records in context".to_string()))?;
+        let records = &context.records;
+        
+        if records.is_empty() {
+            return Ok(()); // No records to process
+        }
 
         for record in records {
             // Check if this record was soft deleted (trashed_at or deleted_at set)
@@ -65,8 +68,7 @@ impl Ring6 for DeleteSchemaDdl {
             let ddl = format!("DROP TABLE IF EXISTS \"{}\"", table_name);
             
             // Execute DDL
-            let pool = context.get_pool()
-                .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+            let pool = context.get_pool();
                 
             sqlx::query(&ddl)
                 .execute(pool)
@@ -89,8 +91,7 @@ impl DeleteSchemaDdl {
     }
     
     async fn cleanup_column_records(&self, context: &ObserverContext, schema_name: &str) -> Result<(), ObserverError> {
-        let pool = context.get_pool()
-            .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+        let pool = context.get_pool();
             
         // Soft delete all column records for this schema
         let now = chrono::Utc::now().to_rfc3339();

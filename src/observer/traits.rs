@@ -215,16 +215,16 @@ impl ObserverBox {
     
     pub fn timeout(&self) -> Duration {
         match self {
-            ObserverBox::DataPreparation(o) => o.timeout(),
-            ObserverBox::InputValidation(o) => o.timeout(), 
-            ObserverBox::Security(o) => o.timeout(),
-            ObserverBox::Business(o) => o.timeout(),
-            ObserverBox::Enrichment(o) => o.timeout(),
-            ObserverBox::Database(o) => o.timeout(),
-            ObserverBox::PostDatabase(o) => o.timeout(),
-            ObserverBox::Audit(o) => o.timeout(),
-            ObserverBox::Integration(o) => o.timeout(),
-            ObserverBox::Notification(o) => o.timeout(),
+            ObserverBox::Ring0(o) => o.timeout(),
+            ObserverBox::Ring1(o) => o.timeout(), 
+            ObserverBox::Ring2(o) => o.timeout(),
+            ObserverBox::Ring3(o) => o.timeout(),
+            ObserverBox::Ring4(o) => o.timeout(),
+            ObserverBox::Ring5(o) => o.timeout(),
+            ObserverBox::Ring6(o) => o.timeout(),
+            ObserverBox::Ring7(o) => o.timeout(),
+            ObserverBox::Ring8(o) => o.timeout(),
+            ObserverBox::Ring9(o) => o.timeout(),
         }
     }
     

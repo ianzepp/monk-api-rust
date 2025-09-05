@@ -1,7 +1,7 @@
 // Ring 6: Create Column DDL Executor - handles ALTER TABLE ADD COLUMN after column record insert
 use async_trait::async_trait;
 use serde_json::{Value, Map};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
@@ -64,8 +64,7 @@ impl Ring6 for CreateColumnDdl {
             let ddl = self.generate_add_column_ddl(&table_name, record)?;
             
             // Execute DDL
-            let pool = context.get_pool()
-                .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+            let pool = context.get_pool();
                 
             sqlx::query(&ddl)
                 .execute(pool)

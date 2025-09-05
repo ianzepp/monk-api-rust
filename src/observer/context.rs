@@ -29,7 +29,7 @@ pub struct ObserverContext {
     pub result: Option<Vec<Value>>,
     
     // Type-safe metadata storage for cross-observer communication
-    metadata: HashMap<TypeId, Box<dyn Any + Send>>,
+    metadata: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     
     // Performance tracking
     pub start_time: Instant,
@@ -85,24 +85,24 @@ impl ObserverContext {
     }
     
     /// Store typed metadata - compile-time type safety
-    pub fn set_metadata<T: Send + 'static>(&mut self, data: T) {
+    pub fn set_metadata<T: Send + Sync + 'static>(&mut self, data: T) {
         self.metadata.insert(TypeId::of::<T>(), Box::new(data));
     }
     
     /// Retrieve typed metadata - compile-time type safety
-    pub fn get_metadata<T: Send + 'static>(&self) -> Option<&T> {
+    pub fn get_metadata<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.metadata.get(&TypeId::of::<T>())
             .and_then(|boxed| boxed.downcast_ref::<T>())
     }
     
     /// Retrieve mutable typed metadata
-    pub fn get_metadata_mut<T: Send + 'static>(&mut self) -> Option<&mut T> {
+    pub fn get_metadata_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
         self.metadata.get_mut(&TypeId::of::<T>())
             .and_then(|boxed| boxed.downcast_mut::<T>())
     }
     
     /// Check if metadata of type T exists
-    pub fn has_metadata<T: Send + 'static>(&self) -> bool {
+    pub fn has_metadata<T: Send + Sync + 'static>(&self) -> bool {
         self.metadata.contains_key(&TypeId::of::<T>())
     }
     

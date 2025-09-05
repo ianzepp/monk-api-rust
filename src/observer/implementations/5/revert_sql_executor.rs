@@ -40,7 +40,7 @@ impl Ring5 for RevertSqlExecutor {
         }
 
         // Get database connection
-        let pool = ctx.get_pool();
+        let pool = ctx.get_pool().clone();
         
         let mut results = Vec::new();
         let mut successful_operations = 0;

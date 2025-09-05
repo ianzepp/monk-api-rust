@@ -34,8 +34,11 @@ impl Observer for CreateSchemaDdl {
 impl Ring6 for CreateSchemaDdl {
     async fn execute(&self, context: &mut ObserverContext) -> Result<(), ObserverError> {
         // Get the newly inserted schema record from context
-        let records = &context.records
-            .ok_or_else(|| ObserverError::ValidationError("No records in context".to_string()))?;
+        let records = &context.records;
+        
+        if records.is_empty() {
+            return Ok(()); // No records to process
+        }
 
         for record in records {
             // Extract schema information from the inserted record
@@ -54,8 +57,7 @@ impl Ring6 for CreateSchemaDdl {
             let ddl = self.generate_create_table_ddl(table_name, definition)?;
             
             // Execute DDL
-            let pool = context.get_pool()
-                .ok_or_else(|| ObserverError::ValidationError("Database pool not available".to_string()))?;
+            let pool = context.get_pool();
                 
             sqlx::query(&ddl)
                 .execute(pool)

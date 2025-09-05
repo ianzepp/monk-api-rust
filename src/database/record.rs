@@ -451,8 +451,8 @@ impl Record {
     }
 
     /// Get field value or default
-    pub fn get_or_default(&self, key: &str, default: Value) -> &Value {
-        self.get(key).unwrap_or(&default)
+    pub fn get_or_default(&self, key: &str, default: Value) -> Value {
+        self.get(key).cloned().unwrap_or(default)
     }
 
     /// Set field only if it's currently empty/null

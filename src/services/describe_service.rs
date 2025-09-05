@@ -400,7 +400,7 @@ impl DescribeService {
             .set("schema_name", schema_name)
             .set("column_name", column_name)
             .set("pg_type", pg_type)
-            .set("json_type", column_definition.property_type)
+            .set("json_type", column_definition.property_type.clone())
             .set("is_required", is_required)
             .set("is_array", column_definition.property_type == "array");
 
