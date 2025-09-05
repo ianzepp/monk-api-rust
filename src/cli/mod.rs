@@ -34,11 +34,6 @@ pub enum Commands {
         cmd: commands::server::ServerCommands,
     },
     
-    #[command(about = "Tenant registry management")]
-    Tenant {
-        #[command(subcommand)]
-        cmd: commands::tenant::TenantCommands,
-    },
     
     #[command(about = "Authentication and token management")]
     Auth {
@@ -87,7 +82,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Init { cmd } => commands::init::handle(cmd, output_format).await,
         Commands::Server { cmd } => commands::server::handle(cmd, output_format).await,
-        Commands::Tenant { cmd } => commands::tenant::handle(cmd, output_format).await,
         Commands::Auth { cmd } => commands::auth::handle(cmd, output_format).await,
         Commands::Data { cmd } => commands::data::handle(cmd, output_format).await,
         Commands::Describe { cmd } => commands::describe::handle(cmd, output_format).await,
