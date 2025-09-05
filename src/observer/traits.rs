@@ -86,137 +86,137 @@ pub trait Observer: Send + Sync {
 
 /// Ring 0: Data Preparation - load existing data, merge updates
 #[async_trait]
-pub trait DataPreparationObserver: Observer {
+pub trait Ring0: Observer {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 1: Input Validation - schema validation, required fields
 #[async_trait]
-pub trait InputValidationObserver: Observer {
+pub trait Ring1: Observer {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 2: Security - access control, soft delete protection
 #[async_trait]  
-pub trait SecurityObserver: Observer {
+pub trait Ring2: Observer {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 3: Business Logic - domain rules, workflows
 #[async_trait]
-pub trait BusinessObserver: Observer {
+pub trait Ring3: Observer {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 4: Enrichment - computed fields, defaults
 #[async_trait]
-pub trait EnrichmentObserver: Observer {
+pub trait Ring4: Observer {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 5: Database - SQL execution (handled by repository layer)
 #[async_trait]
-pub trait DatabaseObserver: Observer {
+pub trait Ring5: Observer {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 6: Post-Database - immediate processing after database operations
 #[async_trait]
-pub trait PostDatabaseObserver: Observer {
+pub trait Ring6: Observer {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 7: Audit - change tracking, compliance logging (async)
 #[async_trait]
-pub trait AuditObserver: Observer {
+pub trait Ring7: Observer {
     async fn execute(&self, ctx: &ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 8: Integration - external APIs, webhooks (async)
 #[async_trait]
-pub trait IntegrationObserver: Observer {
+pub trait Ring8: Observer {
     async fn execute(&self, ctx: &ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Ring 9: Notification - user notifications, real-time updates (async)
 #[async_trait]
-pub trait NotificationObserver: Observer {
+pub trait Ring9: Observer {
     async fn execute(&self, ctx: &ObserverContext) -> Result<(), ObserverError>;
 }
 
 /// Simplified approach: concrete observer types for dynamic dispatch
 /// This avoids the trait object complexity while maintaining type safety
 pub enum ObserverBox {
-    DataPreparation(Box<dyn DataPreparationObserver>),
-    InputValidation(Box<dyn InputValidationObserver>), 
-    Security(Box<dyn SecurityObserver>),
-    Business(Box<dyn BusinessObserver>),
-    Enrichment(Box<dyn EnrichmentObserver>),
-    Database(Box<dyn DatabaseObserver>),
-    PostDatabase(Box<dyn PostDatabaseObserver>),
-    Audit(Box<dyn AuditObserver>),
-    Integration(Box<dyn IntegrationObserver>),
-    Notification(Box<dyn NotificationObserver>),
+    Ring0(Box<dyn Ring0>),
+    Ring1(Box<dyn Ring1>), 
+    Ring2(Box<dyn Ring2>),
+    Ring3(Box<dyn Ring3>),
+    Ring4(Box<dyn Ring4>),
+    Ring5(Box<dyn Ring5>),
+    Ring6(Box<dyn Ring6>),
+    Ring7(Box<dyn Ring7>),
+    Ring8(Box<dyn Ring8>),
+    Ring9(Box<dyn Ring9>),
 }
 
 impl ObserverBox {
     pub fn name(&self) -> &'static str {
         match self {
-            ObserverBox::DataPreparation(o) => o.name(),
-            ObserverBox::InputValidation(o) => o.name(), 
-            ObserverBox::Security(o) => o.name(),
-            ObserverBox::Business(o) => o.name(),
-            ObserverBox::Enrichment(o) => o.name(),
-            ObserverBox::Database(o) => o.name(),
-            ObserverBox::PostDatabase(o) => o.name(),
-            ObserverBox::Audit(o) => o.name(),
-            ObserverBox::Integration(o) => o.name(),
-            ObserverBox::Notification(o) => o.name(),
+            ObserverBox::Ring0(o) => o.name(),
+            ObserverBox::Ring1(o) => o.name(), 
+            ObserverBox::Ring2(o) => o.name(),
+            ObserverBox::Ring3(o) => o.name(),
+            ObserverBox::Ring4(o) => o.name(),
+            ObserverBox::Ring5(o) => o.name(),
+            ObserverBox::Ring6(o) => o.name(),
+            ObserverBox::Ring7(o) => o.name(),
+            ObserverBox::Ring8(o) => o.name(),
+            ObserverBox::Ring9(o) => o.name(),
         }
     }
     
     pub fn ring(&self) -> ObserverRing {
         match self {
-            ObserverBox::DataPreparation(o) => o.ring(),
-            ObserverBox::InputValidation(o) => o.ring(), 
-            ObserverBox::Security(o) => o.ring(),
-            ObserverBox::Business(o) => o.ring(),
-            ObserverBox::Enrichment(o) => o.ring(),
-            ObserverBox::Database(o) => o.ring(),
-            ObserverBox::PostDatabase(o) => o.ring(),
-            ObserverBox::Audit(o) => o.ring(),
-            ObserverBox::Integration(o) => o.ring(),
-            ObserverBox::Notification(o) => o.ring(),
+            ObserverBox::Ring0(o) => o.ring(),
+            ObserverBox::Ring1(o) => o.ring(), 
+            ObserverBox::Ring2(o) => o.ring(),
+            ObserverBox::Ring3(o) => o.ring(),
+            ObserverBox::Ring4(o) => o.ring(),
+            ObserverBox::Ring5(o) => o.ring(),
+            ObserverBox::Ring6(o) => o.ring(),
+            ObserverBox::Ring7(o) => o.ring(),
+            ObserverBox::Ring8(o) => o.ring(),
+            ObserverBox::Ring9(o) => o.ring(),
         }
     }
     
     pub fn applies_to_operation(&self, op: Operation) -> bool {
         match self {
-            ObserverBox::DataPreparation(o) => o.applies_to_operation(op),
-            ObserverBox::InputValidation(o) => o.applies_to_operation(op), 
-            ObserverBox::Security(o) => o.applies_to_operation(op),
-            ObserverBox::Business(o) => o.applies_to_operation(op),
-            ObserverBox::Enrichment(o) => o.applies_to_operation(op),
-            ObserverBox::Database(o) => o.applies_to_operation(op),
-            ObserverBox::PostDatabase(o) => o.applies_to_operation(op),
-            ObserverBox::Audit(o) => o.applies_to_operation(op),
-            ObserverBox::Integration(o) => o.applies_to_operation(op),
-            ObserverBox::Notification(o) => o.applies_to_operation(op),
+            ObserverBox::Ring0(o) => o.applies_to_operation(op),
+            ObserverBox::Ring1(o) => o.applies_to_operation(op), 
+            ObserverBox::Ring2(o) => o.applies_to_operation(op),
+            ObserverBox::Ring3(o) => o.applies_to_operation(op),
+            ObserverBox::Ring4(o) => o.applies_to_operation(op),
+            ObserverBox::Ring5(o) => o.applies_to_operation(op),
+            ObserverBox::Ring6(o) => o.applies_to_operation(op),
+            ObserverBox::Ring7(o) => o.applies_to_operation(op),
+            ObserverBox::Ring8(o) => o.applies_to_operation(op),
+            ObserverBox::Ring9(o) => o.applies_to_operation(op),
         }
     }
     
     pub fn applies_to_schema(&self, schema: &str) -> bool {
         match self {
-            ObserverBox::DataPreparation(o) => o.applies_to_schema(schema),
-            ObserverBox::InputValidation(o) => o.applies_to_schema(schema), 
-            ObserverBox::Security(o) => o.applies_to_schema(schema),
-            ObserverBox::Business(o) => o.applies_to_schema(schema),
-            ObserverBox::Enrichment(o) => o.applies_to_schema(schema),
-            ObserverBox::Database(o) => o.applies_to_schema(schema),
-            ObserverBox::PostDatabase(o) => o.applies_to_schema(schema),
-            ObserverBox::Audit(o) => o.applies_to_schema(schema),
-            ObserverBox::Integration(o) => o.applies_to_schema(schema),
-            ObserverBox::Notification(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring0(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring1(o) => o.applies_to_schema(schema), 
+            ObserverBox::Ring2(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring3(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring4(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring5(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring6(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring7(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring8(o) => o.applies_to_schema(schema),
+            ObserverBox::Ring9(o) => o.applies_to_schema(schema),
         }
     }
     
@@ -237,22 +237,22 @@ impl ObserverBox {
     
     pub async fn execute_sync(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
         match self {
-            ObserverBox::DataPreparation(o) => o.execute(ctx).await,
-            ObserverBox::InputValidation(o) => o.execute(ctx).await, 
-            ObserverBox::Security(o) => o.execute(ctx).await,
-            ObserverBox::Business(o) => o.execute(ctx).await,
-            ObserverBox::Enrichment(o) => o.execute(ctx).await,
-            ObserverBox::Database(o) => o.execute(ctx).await,
-            ObserverBox::PostDatabase(o) => o.execute(ctx).await,
+            ObserverBox::Ring0(o) => o.execute(ctx).await,
+            ObserverBox::Ring1(o) => o.execute(ctx).await, 
+            ObserverBox::Ring2(o) => o.execute(ctx).await,
+            ObserverBox::Ring3(o) => o.execute(ctx).await,
+            ObserverBox::Ring4(o) => o.execute(ctx).await,
+            ObserverBox::Ring5(o) => o.execute(ctx).await,
+            ObserverBox::Ring6(o) => o.execute(ctx).await,
             _ => Ok(()), // Async observers don't execute in sync phase
         }
     }
     
     pub async fn execute_async(&self, ctx: &ObserverContext) -> Result<(), ObserverError> {
         match self {
-            ObserverBox::Audit(o) => o.execute(ctx).await,
-            ObserverBox::Integration(o) => o.execute(ctx).await,
-            ObserverBox::Notification(o) => o.execute(ctx).await,
+            ObserverBox::Ring7(o) => o.execute(ctx).await,
+            ObserverBox::Ring8(o) => o.execute(ctx).await,
+            ObserverBox::Ring9(o) => o.execute(ctx).await,
             _ => Ok(()), // Sync observers don't execute in async phase
         }
     }

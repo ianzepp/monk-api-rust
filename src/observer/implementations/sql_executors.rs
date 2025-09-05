@@ -9,9 +9,9 @@ use super::{
 /// Register all SQL executors for complete REST API CRUD support
 /// Since this is a REST API, all CRUD operations must be available
 pub fn register_all_sql_executors(pipeline: &mut ObserverPipeline) {
-    pipeline.register_observer(ObserverBox::Database(Box::new(CreateSqlExecutor::default())));
-    pipeline.register_observer(ObserverBox::Database(Box::new(UpdateSqlExecutor::default())));
-    pipeline.register_observer(ObserverBox::Database(Box::new(DeleteSqlExecutor::default())));
-    pipeline.register_observer(ObserverBox::Database(Box::new(RevertSqlExecutor::default())));
-    pipeline.register_observer(ObserverBox::Database(Box::new(SelectSqlExecutor::default())));
+    pipeline.register_observer(ObserverBox::Ring5(Box::new(CreateSqlExecutor::default())));
+    pipeline.register_observer(ObserverBox::Ring5(Box::new(UpdateSqlExecutor::default())));
+    pipeline.register_observer(ObserverBox::Ring5(Box::new(DeleteSqlExecutor::default())));
+    pipeline.register_observer(ObserverBox::Ring5(Box::new(RevertSqlExecutor::default())));
+    pipeline.register_observer(ObserverBox::Ring5(Box::new(SelectSqlExecutor::default())));
 }

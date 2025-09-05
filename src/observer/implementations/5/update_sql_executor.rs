@@ -4,7 +4,7 @@ use serde_json::{Value, Map};
 use sqlx::{PgPool, Row, Column, TypeInfo};
 use uuid::Uuid;
 
-use crate::observer::traits::{Observer, DatabaseObserver, ObserverRing, Operation};
+use crate::observer::traits::{Observer, Ring5, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
 use crate::database::manager::DatabaseManager;
@@ -32,7 +32,7 @@ impl Observer for UpdateSqlExecutor {
 }
 
 #[async_trait]
-impl DatabaseObserver for UpdateSqlExecutor {
+impl Ring5 for UpdateSqlExecutor {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
         if ctx.records.is_empty() {
             tracing::debug!("No records to process for UPDATE operation");

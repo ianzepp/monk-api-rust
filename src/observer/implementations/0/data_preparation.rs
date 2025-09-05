@@ -1,14 +1,15 @@
 // Ring 0: Data Preparation - loads existing data and merges updates
 use async_trait::async_trait;
-use serde_json::{Value, Map};
+use serde_json::Value;
 use uuid::Uuid;
 use std::collections::HashMap;
 
-use crate::observer::traits::{Observer, GenericObserver, ObserverRing, Operation};
+use crate::observer::traits::{Observer, Ring0, ObserverRing, Operation as TraitOperation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
 use crate::database::repository::Repository;
 use crate::filter::FilterData;
+use crate::database::record::{Record, Operation};
 
 /// Ring 0: Data Preparation Observer - loads existing data and merges updates
 #[derive(Default)]
@@ -23,9 +24,9 @@ impl Observer for DataPreparationObserver {
         ObserverRing::DataPreparation 
     }
     
-    fn applies_to_operation(&self, op: Operation) -> bool {
+    fn applies_to_operation(&self, op: TraitOperation) -> bool {
         // Only applies to operations that need existing data
-        matches!(op, Operation::Update | Operation::Delete | Operation::Revert)
+        matches!(op, TraitOperation::Update | TraitOperation::Delete)
     }
     
     fn applies_to_schema(&self, _schema: &str) -> bool {
@@ -34,7 +35,7 @@ impl Observer for DataPreparationObserver {
 }
 
 #[async_trait]
-impl GenericObserver for DataPreparationObserver {
+impl Ring0 for DataPreparationObserver {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
         if ctx.records.is_empty() {
             tracing::debug!("No records to prepare data for");
@@ -149,12 +150,10 @@ impl DataPreparationObserver {
                 .map_err(|e| ObserverError::DatabaseError(format!("Failed to serialize existing record: {}", e)))?;
             
             if let Value::Object(record_map) = record_json {
-                // Create StatefulRecord with existing data for deletion
-                let prepared_record = StatefulRecord::existing(
-                    record_map,
-                    None, // No changes for delete - just mark for deletion
-                    RecordOperation::Delete
-                );
+                // Create Record with existing data for deletion
+                let data: std::collections::HashMap<String, Value> = record_map.into_iter().collect();
+                let mut prepared_record = Record::from_sql_data(data);
+                prepared_record.set_operation(Operation::Delete);
                 prepared_records.push(prepared_record);
                 successful_preparations += 1;
             }
@@ -213,12 +212,10 @@ impl DataPreparationObserver {
                 .map_err(|e| ObserverError::DatabaseError(format!("Failed to serialize existing record: {}", e)))?;
             
             if let Value::Object(record_map) = record_json {
-                // Create StatefulRecord with existing data for revert
-                let prepared_record = StatefulRecord::existing(
-                    record_map,
-                    None, // No changes for revert - just unmark deletion
-                    RecordOperation::Revert
-                );
+                // Create Record with existing data for revert
+                let data: std::collections::HashMap<String, Value> = record_map.into_iter().collect();
+                let mut prepared_record = Record::from_sql_data(data);
+                prepared_record.set_operation(Operation::Update);
                 prepared_records.push(prepared_record);
                 successful_preparations += 1;
             }

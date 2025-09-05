@@ -4,7 +4,7 @@ use serde_json::{Value, Map};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::observer::traits::{Observer, PostDatabaseObserver, ObserverRing, Operation};
+use crate::observer::traits::{Observer, Ring6, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
 
@@ -31,7 +31,7 @@ impl Observer for UpdateColumnDdl {
 }
 
 #[async_trait]
-impl PostDatabaseObserver for UpdateColumnDdl {
+impl Ring6 for UpdateColumnDdl {
     async fn execute(&self, context: &mut ObserverContext) -> Result<(), ObserverError> {
         // Get the updated column record from context
         let records = context.get_records()

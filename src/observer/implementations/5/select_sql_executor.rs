@@ -4,7 +4,7 @@ use serde_json::{Value, Map};
 use sqlx::{PgPool, Row, Column, TypeInfo};
 use uuid::Uuid;
 
-use crate::observer::traits::{Observer, DatabaseObserver, ObserverRing, Operation};
+use crate::observer::traits::{Observer, Ring5, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
 use crate::database::manager::DatabaseManager;
@@ -33,7 +33,7 @@ impl Observer for SelectSqlExecutor {
 }
 
 #[async_trait]
-impl DatabaseObserver for SelectSqlExecutor {
+impl Ring5 for SelectSqlExecutor {
     async fn execute(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
         let filter_data = ctx.filter_data.clone().unwrap_or_default();
         
