@@ -87,6 +87,15 @@ impl Repository {
         Ok(records)
     }
 
+    /// Execute DDL (Data Definition Language) statements like CREATE TABLE, ALTER TABLE, DROP TABLE
+    pub async fn execute_ddl(&self, ddl: &str) -> Result<(), DatabaseError> {
+        sqlx::query(ddl)
+            .execute(&self.pool)
+            .await
+            .map_err(DatabaseError::Sqlx)?;
+        Ok(())
+    }
+
     /// Convert database row to Record
     fn row_to_record(&self, row: sqlx::postgres::PgRow) -> Result<Record, DatabaseError> {
         let mut data = HashMap::new();

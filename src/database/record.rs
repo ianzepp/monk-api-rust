@@ -1,14 +1,14 @@
-use serde_json::{Value, Map};
+use chrono::{DateTime, Utc};
+use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 /// System fields that can only be set by observers, not by API input
 const SYSTEM_FIELDS: &[&str] = &[
-    "id", 
-    "created_at", 
-    "updated_at", 
-    "trashed_at", 
+    "id",
+    "created_at",
+    "updated_at",
+    "trashed_at",
     "deleted_at",
     "access_read",
     "access_write",
@@ -97,21 +97,21 @@ impl Record {
     /// Create record from API input JSON, filtering out system fields
     pub fn from_json(json: Value) -> Result<Self, RecordError> {
         let mut record = Self::new();
-        
+
         match json {
             Value::Object(map) => {
                 for (key, value) in map {
                     // Reject system fields from API input
                     if SYSTEM_FIELDS.contains(&key.as_str()) {
                         return Err(RecordError::SystemFieldNotAllowed(
-                            SYSTEM_FIELDS.iter().find(|&&f| f == key).unwrap()
+                            SYSTEM_FIELDS.iter().find(|&&f| f == key).unwrap(),
                         ));
                     }
                     record.fields.insert(key, value);
                 }
                 Ok(record)
             }
-            _ => Err(RecordError::InvalidJson("Expected JSON object".to_string()))
+            _ => Err(RecordError::InvalidJson("Expected JSON object".to_string())),
         }
     }
 
@@ -143,34 +143,38 @@ impl Record {
     }
 
     /// Set field value with automatic change tracking
-    pub fn set(&mut self, key: impl Into<String>, value: Value) -> &mut Self {
+    pub fn set(&mut self, key: impl Into<String>, value: impl Into<Value>) -> &mut Self {
         let key = key.into();
-        
+
         // Prevent setting system fields directly (observers can use set_system_field)
         if SYSTEM_FIELDS.contains(&key.as_str()) {
             tracing::warn!("Attempted to set system field '{}' - ignoring", key);
             return self;
         }
-        
+
         // Track changes if we have original data
         if self.original.is_some() {
             self.modified_fields.insert(key.clone());
         }
-        
-        self.fields.insert(key, value);
+
+        self.fields.insert(key, value.into());
         self
     }
 
     /// Set system field (for observers only)
-    pub fn set_system_field(&mut self, key: impl Into<String>, value: Value) -> &mut Self {
+    pub fn set_system_field(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<Value>,
+    ) -> &mut Self {
         let key = key.into();
-        
+
         // Track changes if we have original data
         if self.original.is_some() {
             self.modified_fields.insert(key.clone());
         }
-        
-        self.fields.insert(key, value);
+
+        self.fields.insert(key, value.into());
         self
     }
 
@@ -207,16 +211,13 @@ impl Record {
 
     /// Get record ID
     pub fn id(&self) -> Option<Uuid> {
-        self.get("id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
+        self.get("id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok())
     }
 
     /// Set record ID (system field)
     pub fn set_id(&mut self, id: Uuid) -> &mut Self {
         self.set_system_field("id", Value::String(id.to_string()))
     }
-
 
     /// Get created_at timestamp
     pub fn created_at(&self) -> Option<DateTime<Utc>> {
@@ -298,39 +299,40 @@ impl Record {
     /// Get detailed changes for each field
     pub fn changes(&self) -> HashMap<String, FieldChange> {
         let mut changes = HashMap::new();
-        
+
         if let Some(original) = &self.original {
             // Check modified and added fields
             for field in &self.modified_fields {
                 let old_value = original.get(field).cloned();
                 let new_value = self.fields.get(field).cloned();
-                
+
                 let change_type = match (&old_value, &new_value) {
                     (None, Some(_)) => ChangeType::Added,
                     (Some(_), None) => ChangeType::Removed,
                     (Some(old), Some(new)) if old != new => ChangeType::Modified,
                     _ => continue, // No actual change
                 };
-                
-                changes.insert(field.clone(), FieldChange {
-                    field: field.clone(),
-                    old_value,
-                    new_value,
-                    change_type,
-                });
+
+                changes.insert(
+                    field.clone(),
+                    FieldChange { field: field.clone(), old_value, new_value, change_type },
+                );
             }
         } else {
             // For CREATE operations, all fields are "added"
             for (field, value) in &self.fields {
-                changes.insert(field.clone(), FieldChange {
-                    field: field.clone(),
-                    old_value: None,
-                    new_value: Some(value.clone()),
-                    change_type: ChangeType::Added,
-                });
+                changes.insert(
+                    field.clone(),
+                    FieldChange {
+                        field: field.clone(),
+                        old_value: None,
+                        new_value: Some(value.clone()),
+                        change_type: ChangeType::Added,
+                    },
+                );
             }
         }
-        
+
         changes
     }
 
@@ -342,7 +344,7 @@ impl Record {
             removed: HashSet::new(),
             unchanged: HashSet::new(),
         };
-        
+
         if let Some(original) = &self.original {
             // All current fields
             for (key, value) in &self.fields {
@@ -351,19 +353,22 @@ impl Record {
                         diff.added.insert(key.clone(), value.clone());
                     }
                     Some(old_value) if old_value != value => {
-                        diff.modified.insert(key.clone(), FieldChange {
-                            field: key.clone(),
-                            old_value: Some(old_value.clone()),
-                            new_value: Some(value.clone()),
-                            change_type: ChangeType::Modified,
-                        });
+                        diff.modified.insert(
+                            key.clone(),
+                            FieldChange {
+                                field: key.clone(),
+                                old_value: Some(old_value.clone()),
+                                new_value: Some(value.clone()),
+                                change_type: ChangeType::Modified,
+                            },
+                        );
                     }
                     Some(_) => {
                         diff.unchanged.insert(key.clone());
                     }
                 }
             }
-            
+
             // Check for removed fields
             for key in original.keys() {
                 if !self.fields.contains_key(key) {
@@ -376,7 +381,7 @@ impl Record {
                 diff.added.insert(key.clone(), value.clone());
             }
         }
-        
+
         diff
     }
 
@@ -386,15 +391,13 @@ impl Record {
 
     /// Convert to JSON Value (all fields)
     pub fn to_json(&self) -> Value {
-        Value::Object(self.fields.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect())
+        Value::Object(self.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }
 
     /// Convert to API output format (includes system fields)
     pub fn to_api_output(&self) -> Value {
         let mut output = self.fields.clone();
-        
+
         // Ensure system fields are included from original if they exist
         if let Some(original) = &self.original {
             for &field in SYSTEM_FIELDS {
@@ -406,7 +409,7 @@ impl Record {
                 }
             }
         }
-        
+
         Value::Object(output.into_iter().collect())
     }
 
@@ -417,9 +420,7 @@ impl Record {
 
     /// Convert to serde_json::Map (for StatefulRecord compatibility)
     pub fn to_map(&self) -> Map<String, Value> {
-        self.fields.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        self.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     // ========================================
@@ -446,7 +447,9 @@ impl Record {
         for &field in fields {
             match self.get(field) {
                 None => return Err(RecordError::MissingRequiredField(field.to_string())),
-                Some(Value::Null) => return Err(RecordError::MissingRequiredField(field.to_string())),
+                Some(Value::Null) => {
+                    return Err(RecordError::MissingRequiredField(field.to_string()))
+                }
                 Some(_) => continue,
             }
         }
@@ -511,33 +514,31 @@ impl Record {
                 let mut records = Vec::with_capacity(array.len());
                 for (index, item) in array.into_iter().enumerate() {
                     let record = Self::from_json(item)
-                        .map_err(|e| RecordError::InvalidJson(
-                            format!("Item {}: {}", index, e)
-                        ))?;
+                        .map_err(|e| RecordError::InvalidJson(format!("Item {}: {}", index, e)))?;
                     records.push(record);
                 }
                 Ok(records)
             }
-            _ => Err(RecordError::InvalidJson("Expected JSON array".to_string()))
+            _ => Err(RecordError::InvalidJson("Expected JSON array".to_string())),
         }
     }
-    
+
     /// Convert Vec<Record> to JSON array
     pub fn to_json_array(records: Vec<Self>) -> Value {
         Value::Array(records.into_iter().map(|r| r.to_json()).collect())
     }
-    
+
     /// Convert Vec<Record> to API output JSON array
     pub fn to_api_output_array(records: Vec<Self>) -> Value {
         Value::Array(records.into_iter().map(|r| r.to_api_output()).collect())
     }
-    
+
     /// Try to convert any JSON value to Vec<Record> (handles both single objects and arrays)
     pub fn from_json_flexible(json: Value) -> Result<Vec<Self>, RecordError> {
         match json {
             Value::Array(_) => Self::from_json_array(json),
             Value::Object(_) => Ok(vec![Self::from_json(json)?]),
-            _ => Err(RecordError::InvalidJson("Expected JSON object or array".to_string()))
+            _ => Err(RecordError::InvalidJson("Expected JSON object or array".to_string())),
         }
     }
 }
@@ -550,16 +551,16 @@ impl Record {
 pub trait RecordVecExt {
     /// Convert to JSON array value
     fn to_json_array(self) -> Value;
-    
-    /// Convert to API output JSON array  
+
+    /// Convert to API output JSON array
     fn to_api_output_array(self) -> Value;
-    
+
     /// Convert to API output (alias for to_api_output_array)
     fn to_api(self) -> Value;
-    
+
     /// Convert to JSON string
     fn to_json_string(self) -> Result<String, serde_json::Error>;
-    
+
     /// Convert to API output JSON string
     fn to_api_output_string(self) -> Result<String, serde_json::Error>;
 }
@@ -568,36 +569,36 @@ impl RecordVecExt for Vec<Record> {
     fn to_json_array(self) -> Value {
         Record::to_json_array(self)
     }
-    
+
     fn to_api_output_array(self) -> Value {
         Record::to_api_output_array(self)
     }
-    
+
     fn to_api(self) -> Value {
         self.to_api_output_array()
     }
-    
+
     fn to_json_string(self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.to_json_array())
     }
-    
+
     fn to_api_output_string(self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.to_api_output_array())
     }
 }
 
-/// Extension trait for Results containing Vec<Record> 
+/// Extension trait for Results containing Vec<Record>
 pub trait RecordResultExt<E> {
     /// Map successful results to JSON array
     fn to_json_array(self) -> Result<Value, E>;
-    
+
     /// Map successful results to API output JSON array
     fn to_api_output_array(self) -> Result<Value, E>;
-    
+
     /// Map successful results to JSON string
     fn to_json_string(self) -> Result<String, RecordResultError<E>>;
-    
-    /// Map successful results to API output JSON string  
+
+    /// Map successful results to API output JSON string
     fn to_api_output_string(self) -> Result<String, RecordResultError<E>>;
 }
 
@@ -605,21 +606,23 @@ impl<E> RecordResultExt<E> for Result<Vec<Record>, E> {
     fn to_json_array(self) -> Result<Value, E> {
         self.map(|records| records.to_json_array())
     }
-    
+
     fn to_api_output_array(self) -> Result<Value, E> {
         self.map(|records| records.to_api_output_array())
     }
-    
+
     fn to_json_string(self) -> Result<String, RecordResultError<E>> {
         match self {
             Ok(records) => records.to_json_string().map_err(RecordResultError::SerializationError),
             Err(e) => Err(RecordResultError::OriginalError(e)),
         }
     }
-    
+
     fn to_api_output_string(self) -> Result<String, RecordResultError<E>> {
         match self {
-            Ok(records) => records.to_api_output_string().map_err(RecordResultError::SerializationError),
+            Ok(records) => {
+                records.to_api_output_string().map_err(RecordResultError::SerializationError)
+            }
             Err(e) => Err(RecordResultError::OriginalError(e)),
         }
     }
@@ -656,9 +659,12 @@ impl<E: std::error::Error + 'static> std::error::Error for RecordResultError<E> 
 
 impl std::fmt::Display for Record {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Record(id: {:?}, fields: {}, changed: {})", 
-               self.id(), 
-               self.fields.len(), 
-               self.has_changes())
+        write!(
+            f,
+            "Record(id: {:?}, fields: {}, changed: {})",
+            self.id(),
+            self.fields.len(),
+            self.has_changes()
+        )
     }
 }

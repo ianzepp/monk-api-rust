@@ -55,28 +55,26 @@ pub async fn get(
 pub async fn post(
     Path(schema): Path<String>,
     Query(_query): Query<DescribeQuery>,
-    Json(_payload): Json<Value>,
+    Json(payload): Json<Value>,
     Extension(TenantPool(pool)): Extension<TenantPool>,
     Extension(auth_user): Extension<AuthUser>,
-) -> impl IntoResponse {
-    // TODO: Implement schema creation
-    // 1. Parse and validate JSON Schema definition
-    // 2. Generate PostgreSQL DDL
-    // 3. Execute DDL to create table
-    // 4. Store schema definition in registry
-    // 5. Return success with created schema info
-    
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("POST /api/describe/{} not yet implemented", schema),
-            "message": "This will create a new schema from JSON Schema definition"
-        })),
-    )
+) -> ApiResult<Value> {
+    let service = DescribeService::new(pool);
+    let created_schema = service.create_one(&schema, payload).await
+        .map_err(|e| match e {
+            crate::services::describe_service::DescribeError::AlreadyExists(_) => 
+                ApiError::conflict(format!("Schema '{}' already exists", schema)),
+            crate::services::describe_service::DescribeError::Protected(_) => 
+                ApiError::bad_request(format!("Schema '{}' is protected and cannot be created", schema)),
+            crate::services::describe_service::DescribeError::InvalidFormat(msg) => 
+                ApiError::bad_request(format!("Invalid schema format: {}", msg)),
+            _ => ApiError::internal_server_error("Failed to create schema")
+        })?;
+
+    Ok(ApiResponse::success(serde_json::to_value(created_schema)?))
 }
 
-/// PUT /api/describe/:schema - Update an existing schema definition
+/// PATCH /api/describe/:schema - Update an existing schema definition
 /// 
 /// Accepts a JSON Schema definition and:
 /// 1. Validates new schema definition
@@ -84,29 +82,26 @@ pub async fn post(
 /// 3. Generates ALTER TABLE statements for safe migrations
 /// 4. Updates database table structure
 /// 5. Updates schema registry
-pub async fn put(
+pub async fn patch(
     Path(schema): Path<String>,
     Query(_query): Query<DescribeQuery>,
-    Json(_payload): Json<Value>,
+    Json(payload): Json<Value>,
     Extension(TenantPool(pool)): Extension<TenantPool>,
     Extension(auth_user): Extension<AuthUser>,
-) -> impl IntoResponse {
-    // TODO: Implement schema update
-    // 1. Fetch existing schema definition
-    // 2. Validate new schema definition
-    // 3. Generate migration SQL (ALTER TABLE statements)
-    // 4. Execute migration
-    // 5. Update schema registry
-    // 6. Return success with migration summary
-    
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "success": false,
-            "error": format!("PUT /api/describe/{} not yet implemented", schema),
-            "message": "This will update an existing schema definition"
-        })),
-    )
+) -> ApiResult<Value> {
+    let service = DescribeService::new(pool);
+    let updated_schema = service.update_404(&schema, payload).await
+        .map_err(|e| match e {
+            crate::services::describe_service::DescribeError::NotFound(_) => 
+                ApiError::not_found(format!("Schema '{}' not found", schema)),
+            crate::services::describe_service::DescribeError::Protected(_) => 
+                ApiError::bad_request(format!("Schema '{}' is protected and cannot be updated", schema)),
+            crate::services::describe_service::DescribeError::InvalidFormat(msg) => 
+                ApiError::bad_request(format!("Invalid schema format: {}", msg)),
+            _ => ApiError::internal_server_error("Failed to update schema")
+        })?;
+
+    Ok(ApiResponse::success(serde_json::to_value(updated_schema)?))
 }
 
 /// DELETE /api/describe/:schema - Delete a schema and its associated table
@@ -127,8 +122,8 @@ pub async fn delete(
         .map_err(|e| match e {
             crate::services::describe_service::DescribeError::NotFound(_) => 
                 ApiError::not_found(format!("Schema '{}' not found", schema)),
-            crate::services::describe_service::DescribeError::ProtectedSchema(name) => 
-                ApiError::bad_request(format!("Schema '{}' is protected and cannot be deleted", name)),
+            crate::services::describe_service::DescribeError::Protected(_) => 
+                ApiError::bad_request(format!("Schema '{}' is protected and cannot be deleted", schema)),
             _ => ApiError::internal_server_error("Failed to delete schema")
         })?;
 

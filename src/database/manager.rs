@@ -19,7 +19,7 @@ pub enum DatabaseError {
 
     #[error("Not found: {0}")]
     NotFound(String),
-    
+
     #[error("Query error: {0}")]
     QueryError(String),
 
@@ -28,7 +28,7 @@ pub enum DatabaseError {
 
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
-    
+
     #[error(transparent)]
     Observer(#[from] crate::observer::error::ObserverError),
 }
@@ -42,9 +42,7 @@ impl DatabaseManager {
     fn instance() -> &'static DatabaseManager {
         use std::sync::OnceLock;
         static INSTANCE: OnceLock<DatabaseManager> = OnceLock::new();
-        INSTANCE.get_or_init(|| DatabaseManager {
-            pools: Arc::new(RwLock::new(HashMap::new())),
-        })
+        INSTANCE.get_or_init(|| DatabaseManager { pools: Arc::new(RwLock::new(HashMap::new())) })
     }
 
     /// Name of the system database. Currently fixed as "monk_main".
@@ -118,16 +116,16 @@ impl DatabaseManager {
 
         // Connect to postgres database for administrative operations
         let admin_pool = Self::instance().get_admin_pool().await?;
-        
+
         // Create new database from template
         let query = format!(
             "CREATE DATABASE {} WITH TEMPLATE {}",
             Self::quote_identifier(target_db),
             Self::quote_identifier(source_db)
         );
-        
+
         sqlx::query(&query).execute(&admin_pool).await?;
-        
+
         info!("Cloned database {} -> {}", source_db, target_db);
         Ok(())
     }
@@ -144,9 +142,7 @@ impl DatabaseManager {
 
     /// Create a new DatabaseManager instance (for services that need non-static access)
     pub fn new() -> Self {
-        Self {
-            pools: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { pools: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     /// Quote SQL identifier to prevent injection
@@ -163,6 +159,7 @@ impl DatabaseManager {
             info!("Closed database pool: {}", name);
         }
     }
+
 
     /// Validate database names to prevent injection. Accepts:
     /// - exact "monk_main"
