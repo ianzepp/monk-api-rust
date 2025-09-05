@@ -49,15 +49,8 @@ impl ObserverRing {
     }
 }
 
-/// Database operations supported by the observer system
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Operation {
-    Create,
-    Update, 
-    Delete,
-    Revert,
-    Select,
-}
+// Operation enum moved to crate::types for shared usage
+pub use crate::types::Operation;
 
 /// Base trait for all observers with metadata and applicability checks
 pub trait Observer: Send + Sync {

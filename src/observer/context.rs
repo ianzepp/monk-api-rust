@@ -128,21 +128,21 @@ impl ObserverContext {
     }
     
     /// Get records by operation type
-    pub fn records_by_operation(&self, operation: crate::database::record::Operation) -> Vec<&Record> {
+    pub fn records_by_operation(&self, operation: Operation) -> Vec<&Record> {
         self.records.iter()
             .filter(|record| record.operation() == operation)
             .collect()
     }
     
     /// Get mutable records by operation type
-    pub fn records_by_operation_mut(&mut self, operation: crate::database::record::Operation) -> Vec<&mut Record> {
+    pub fn records_by_operation_mut(&mut self, operation: Operation) -> Vec<&mut Record> {
         self.records.iter_mut()
             .filter(|record| record.operation() == operation)
             .collect()
     }
     
     /// Count records by operation type
-    pub fn count_by_operation(&self, operation: crate::database::record::Operation) -> usize {
+    pub fn count_by_operation(&self, operation: Operation) -> usize {
         self.records.iter()
             .filter(|record| record.operation() == operation)
             .count()

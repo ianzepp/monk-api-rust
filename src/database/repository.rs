@@ -4,7 +4,8 @@ use uuid::Uuid;
 use std::collections::HashMap;
 
 use crate::database::manager::DatabaseError;
-use crate::database::record::{Record, Operation};
+use crate::database::record::Record;
+use crate::types::Operation;
 use crate::filter::FilterData;
 use crate::observer::{ObserverPipeline, register_all_sql_executors};
 

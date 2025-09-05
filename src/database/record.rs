@@ -15,14 +15,8 @@ const SYSTEM_FIELDS: &[&str] = &[
     "access_delete",
 ];
 
-/// Operation type for record processing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Operation {
-    Create,
-    Update,
-    Delete,
-    Select,
-}
+// Operation enum moved to crate::types for shared usage
+use crate::types::Operation;
 
 /// Field change information for diff tracking
 #[derive(Debug, Clone, PartialEq)]

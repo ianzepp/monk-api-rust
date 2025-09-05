@@ -7,4 +7,5 @@ pub mod dynamic;
 pub mod service;
 
 pub use manager::{DatabaseManager, DatabaseError};
-pub use record::{Record, RecordError, Operation, FieldChange, ChangeType, RecordDiff, RecordVecExt, RecordResultExt, RecordResultError};
+pub use record::{Record, RecordError, FieldChange, ChangeType, RecordDiff, RecordVecExt, RecordResultExt, RecordResultError};
+pub use crate::types::Operation;

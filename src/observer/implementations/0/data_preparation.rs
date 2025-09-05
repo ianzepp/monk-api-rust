@@ -4,12 +4,12 @@ use serde_json::Value;
 use uuid::Uuid;
 use std::collections::HashMap;
 
-use crate::observer::traits::{Observer, Ring0, ObserverRing, Operation as TraitOperation};
+use crate::observer::traits::{Observer, Ring0, ObserverRing, Operation};
 use crate::observer::context::ObserverContext;
 use crate::observer::error::ObserverError;
 use crate::database::repository::Repository;
 use crate::filter::FilterData;
-use crate::database::record::{Record, Operation};
+use crate::database::record::Record;
 
 /// Ring 0: Data Preparation Observer - loads existing data and merges updates
 #[derive(Default)]
@@ -24,9 +24,9 @@ impl Observer for DataPreparationObserver {
         ObserverRing::DataPreparation 
     }
     
-    fn applies_to_operation(&self, op: TraitOperation) -> bool {
+    fn applies_to_operation(&self, op: Operation) -> bool {
         // Only applies to operations that need existing data
-        matches!(op, TraitOperation::Update | TraitOperation::Delete)
+        matches!(op, Operation::Update | Operation::Delete)
     }
     
     fn applies_to_schema(&self, _schema: &str) -> bool {
@@ -98,7 +98,7 @@ impl DataPreparationObserver {
                     record.inject(existing_record.to_hashmap());
                     successful_preparations += 1;
                 } else {
-                    let error = ObserverError::NotFound(format!("Record {} not found for update", record_id));
+                    let error = ObserverError::ValidationError(format!("Record {} not found for update", record_id));
                     tracing::error!("Failed to find existing record for update: {}", error);
                     ctx.errors.push(error);
                 }
@@ -120,7 +120,7 @@ impl DataPreparationObserver {
     /// Prepare data for DELETE operations - load existing records for soft delete
     async fn prepare_delete_data(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
         // Skip data loading if records already have original data loaded
-        let needs_preparation = ctx.records.iter().any(|record| record.original.is_none());
+        let needs_preparation = ctx.records.iter().any(|record| record.original().is_none());
         if !needs_preparation {
             tracing::debug!("DELETE records already have original data loaded, skipping data preparation");
             return Ok(());
@@ -128,7 +128,7 @@ impl DataPreparationObserver {
 
         // Extract all IDs from Records that need data loading
         let ids: Vec<Uuid> = ctx.records.iter()
-            .filter_map(|record| record.id)
+            .filter_map(|record| record.id())
             .collect();
 
         if ids.is_empty() {
@@ -140,23 +140,13 @@ impl DataPreparationObserver {
         let existing_records = repository.select_ids(ids).await
             .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
 
-        // Convert existing records to Records for deletion
+        // Set delete operation on existing records (no conversion needed)
         let mut prepared_records = Vec::new();
-        let mut successful_preparations = 0;
+        let successful_preparations = existing_records.len();
 
-        for record in existing_records {
-            // Serialize to JSON to get data map
-            let record_json = serde_json::to_value(record)
-                .map_err(|e| ObserverError::DatabaseError(format!("Failed to serialize existing record: {}", e)))?;
-            
-            if let Value::Object(record_map) = record_json {
-                // Create Record with existing data for deletion
-                let data: std::collections::HashMap<String, Value> = record_map.into_iter().collect();
-                let mut prepared_record = Record::from_sql_data(data);
-                prepared_record.set_operation(Operation::Delete);
-                prepared_records.push(prepared_record);
-                successful_preparations += 1;
-            }
+        for mut record in existing_records {
+            record.set_operation(Operation::Delete);
+            prepared_records.push(record);
         }
 
         // Replace records with prepared versions
@@ -173,7 +163,7 @@ impl DataPreparationObserver {
     /// Prepare data for REVERT operations - load existing soft-deleted records
     async fn prepare_revert_data(&self, ctx: &mut ObserverContext) -> Result<(), ObserverError> {
         // Skip data loading if records already have original data loaded
-        let needs_preparation = ctx.records.iter().any(|record| record.original.is_none());
+        let needs_preparation = ctx.records.iter().any(|record| record.original().is_none());
         if !needs_preparation {
             tracing::debug!("REVERT records already have original data loaded, skipping data preparation");
             return Ok(());
@@ -181,7 +171,7 @@ impl DataPreparationObserver {
 
         // Extract all IDs from Records that need data loading
         let ids: Vec<Uuid> = ctx.records.iter()
-            .filter_map(|record| record.id)
+            .filter_map(|record| record.id())
             .collect();
 
         if ids.is_empty() {
@@ -195,30 +185,20 @@ impl DataPreparationObserver {
                 "id": { "$in": ids },
                 "trashed_at": { "$ne": null } // Only trashed records
             })),
-            include_trashed: Some(true), // Include trashed records
+            // Note: Repository query should handle trashed records via where clause
             ..Default::default()
         };
 
         let existing_records = repository.select_any(filter_data).await
             .map_err(|e| ObserverError::DatabaseError(e.to_string()))?;
 
-        // Convert existing trashed records to Records for revert
+        // Set update operation on existing trashed records for revert (no conversion needed)
         let mut prepared_records = Vec::new();
-        let mut successful_preparations = 0;
+        let successful_preparations = existing_records.len();
 
-        for record in existing_records {
-            // Serialize to JSON to get data map
-            let record_json = serde_json::to_value(record)
-                .map_err(|e| ObserverError::DatabaseError(format!("Failed to serialize existing record: {}", e)))?;
-            
-            if let Value::Object(record_map) = record_json {
-                // Create Record with existing data for revert
-                let data: std::collections::HashMap<String, Value> = record_map.into_iter().collect();
-                let mut prepared_record = Record::from_sql_data(data);
-                prepared_record.set_operation(Operation::Update);
-                prepared_records.push(prepared_record);
-                successful_preparations += 1;
-            }
+        for mut record in existing_records {
+            record.set_operation(Operation::Update);
+            prepared_records.push(record);
         }
 
         // Replace records with prepared versions
@@ -233,7 +213,7 @@ impl DataPreparationObserver {
     }
 
     /// Create a generic Repository for the schema to leverage existing bulk query methods
-    async fn create_repository(&self, schema_name: &str) -> Result<Repository<serde_json::Value>, ObserverError> {
+    async fn create_repository(&self, schema_name: &str) -> Result<Repository, ObserverError> {
         use crate::database::manager::DatabaseManager;
         
         let pool = DatabaseManager::main_pool().await
