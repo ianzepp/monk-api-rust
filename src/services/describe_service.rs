@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::database::manager::{DatabaseError, DatabaseManager};
+use crate::database::manager::DatabaseError;
 use crate::database::record::Record;
 use crate::database::repository::Repository;
 
@@ -400,13 +400,13 @@ impl DescribeService {
             .set("schema_name", schema_name)
             .set("column_name", column_name)
             .set("pg_type", pg_type)
-            .set("json_type", &column_definition.property_type)
+            .set("json_type", column_definition.property_type)
             .set("is_required", is_required)
             .set("is_array", column_definition.property_type == "array");
 
         // Store format if present
         if let Some(format) = &column_definition.format {
-            column_record.set("format", format);
+            column_record.set("format", format.as_str());
         }
 
         if let Some(default) = &column_definition.default {
@@ -443,13 +443,13 @@ impl DescribeService {
         }
 
         if let Some(pattern) = &column_definition.pattern {
-            column_record.set("pattern_regex", pattern);
+            column_record.set("pattern_regex", pattern.as_str());
         }
         if let Some(enum_vals) = &column_definition.enum_values {
-            column_record.set("enum_values", enum_vals);
+            column_record.set("enum_values", enum_vals.to_vec());
         }
         if let Some(desc) = &column_definition.description {
-            column_record.set("description", desc);
+            column_record.set("description", desc.as_str());
         }
 
         // Skip x-monk-relationship for now as requested
