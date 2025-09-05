@@ -499,6 +499,150 @@ impl From<Record> for Value {
 }
 
 // ========================================
+// Bulk Conversion Helpers
+// ========================================
+
+impl Record {
+    /// Convert JSON array to Vec<Record> with proper error handling
+    pub fn from_json_array(json: Value) -> Result<Vec<Self>, RecordError> {
+        match json {
+            Value::Array(array) => {
+                let mut records = Vec::with_capacity(array.len());
+                for (index, item) in array.into_iter().enumerate() {
+                    let record = Self::from_json(item)
+                        .map_err(|e| RecordError::InvalidJson(
+                            format!("Item {}: {}", index, e)
+                        ))?;
+                    records.push(record);
+                }
+                Ok(records)
+            }
+            _ => Err(RecordError::InvalidJson("Expected JSON array".to_string()))
+        }
+    }
+    
+    /// Convert Vec<Record> to JSON array
+    pub fn to_json_array(records: Vec<Self>) -> Value {
+        Value::Array(records.into_iter().map(|r| r.to_json()).collect())
+    }
+    
+    /// Convert Vec<Record> to API output JSON array
+    pub fn to_api_output_array(records: Vec<Self>) -> Value {
+        Value::Array(records.into_iter().map(|r| r.to_api_output()).collect())
+    }
+    
+    /// Try to convert any JSON value to Vec<Record> (handles both single objects and arrays)
+    pub fn from_json_flexible(json: Value) -> Result<Vec<Self>, RecordError> {
+        match json {
+            Value::Array(_) => Self::from_json_array(json),
+            Value::Object(_) => Ok(vec![Self::from_json(json)?]),
+            _ => Err(RecordError::InvalidJson("Expected JSON object or array".to_string()))
+        }
+    }
+}
+
+// ========================================
+// Extension Traits for Ergonomic JSON Handling
+// ========================================
+
+/// Extension trait for Vec<Record> to add convenient JSON conversion methods
+pub trait RecordVecExt {
+    /// Convert to JSON array value
+    fn to_json_array(self) -> Value;
+    
+    /// Convert to API output JSON array  
+    fn to_api_output_array(self) -> Value;
+    
+    /// Convert to JSON string
+    fn to_json_string(self) -> Result<String, serde_json::Error>;
+    
+    /// Convert to API output JSON string
+    fn to_api_output_string(self) -> Result<String, serde_json::Error>;
+}
+
+impl RecordVecExt for Vec<Record> {
+    fn to_json_array(self) -> Value {
+        Record::to_json_array(self)
+    }
+    
+    fn to_api_output_array(self) -> Value {
+        Record::to_api_output_array(self)
+    }
+    
+    fn to_json_string(self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.to_json_array())
+    }
+    
+    fn to_api_output_string(self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.to_api_output_array())
+    }
+}
+
+/// Extension trait for Results containing Vec<Record> 
+pub trait RecordResultExt<E> {
+    /// Map successful results to JSON array
+    fn to_json_array(self) -> Result<Value, E>;
+    
+    /// Map successful results to API output JSON array
+    fn to_api_output_array(self) -> Result<Value, E>;
+    
+    /// Map successful results to JSON string
+    fn to_json_string(self) -> Result<String, RecordResultError<E>>;
+    
+    /// Map successful results to API output JSON string  
+    fn to_api_output_string(self) -> Result<String, RecordResultError<E>>;
+}
+
+impl<E> RecordResultExt<E> for Result<Vec<Record>, E> {
+    fn to_json_array(self) -> Result<Value, E> {
+        self.map(|records| records.to_json_array())
+    }
+    
+    fn to_api_output_array(self) -> Result<Value, E> {
+        self.map(|records| records.to_api_output_array())
+    }
+    
+    fn to_json_string(self) -> Result<String, RecordResultError<E>> {
+        match self {
+            Ok(records) => records.to_json_string().map_err(RecordResultError::SerializationError),
+            Err(e) => Err(RecordResultError::OriginalError(e)),
+        }
+    }
+    
+    fn to_api_output_string(self) -> Result<String, RecordResultError<E>> {
+        match self {
+            Ok(records) => records.to_api_output_string().map_err(RecordResultError::SerializationError),
+            Err(e) => Err(RecordResultError::OriginalError(e)),
+        }
+    }
+}
+
+/// Error type for Record result operations
+#[derive(Debug)]
+pub enum RecordResultError<E> {
+    OriginalError(E),
+    SerializationError(serde_json::Error),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for RecordResultError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecordResultError::OriginalError(e) => write!(f, "Original error: {}", e),
+            RecordResultError::SerializationError(e) => write!(f, "Serialization error: {}", e),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for RecordResultError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RecordResultError::OriginalError(e) => Some(e),
+            RecordResultError::SerializationError(e) => Some(e),
+        }
+    }
+}
+
+// ========================================
 // Display
 // ========================================
 

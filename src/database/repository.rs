@@ -4,9 +4,41 @@ use uuid::Uuid;
 use std::collections::HashMap;
 
 use crate::database::manager::DatabaseError;
-use crate::database::record::{Record, RecordError, Operation};
+use crate::database::record::{Record, Operation};
 use crate::filter::FilterData;
 use crate::observer::{ObserverPipeline, register_all_sql_executors};
+
+/// Query parameter that can be either a UUID or a FilterData
+#[derive(Debug, Clone)]
+pub enum QueryParam {
+    Id(Uuid),
+    Filter(FilterData),
+}
+
+impl From<Uuid> for QueryParam {
+    fn from(id: Uuid) -> Self {
+        QueryParam::Id(id)
+    }
+}
+
+impl From<FilterData> for QueryParam {
+    fn from(filter: FilterData) -> Self {
+        QueryParam::Filter(filter)
+    }
+}
+
+impl QueryParam {
+    /// Convert to FilterData for internal use
+    pub fn to_filter_data(self) -> FilterData {
+        match self {
+            QueryParam::Id(id) => FilterData {
+                where_clause: Some(serde_json::json!({ "id": id })),
+                ..Default::default()
+            },
+            QueryParam::Filter(filter) => filter,
+        }
+    }
+}
 
 pub struct Repository {
     table_name: String,
@@ -42,29 +74,29 @@ impl Repository {
         for param in params {
             sql_query = self.bind_param(sql_query, param);
         }
-        
+
         let rows = sql_query.fetch_all(&self.pool).await
             .map_err(DatabaseError::Sqlx)?;
-        
+
         let mut records = Vec::new();
         for row in rows {
             let record = self.row_to_record(row)?;
             records.push(record);
         }
-        
+
         Ok(records)
     }
 
     /// Convert database row to Record
     fn row_to_record(&self, row: sqlx::postgres::PgRow) -> Result<Record, DatabaseError> {
         let mut data = HashMap::new();
-        
+
         for (i, column) in row.columns().iter().enumerate() {
             let column_name = column.name();
             let value = self.extract_column_value(&row, i, column.type_info())?;
             data.insert(column_name.to_string(), value);
         }
-        
+
         Ok(Record::from_sql_data(data))
     }
 
@@ -76,7 +108,7 @@ impl Repository {
         type_info: &sqlx::postgres::PgTypeInfo,
     ) -> Result<Value, DatabaseError> {
         let type_name = type_info.name();
-        
+
         match type_name {
             "UUID" => {
                 if let Ok(uuid) = row.try_get::<Option<Uuid>, _>(index) {
@@ -166,21 +198,27 @@ impl Repository {
             .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 
-    pub async fn select_one(&self, filter_data: FilterData) -> Result<Option<Record>, DatabaseError> {
+    /// Select single record - accepts either UUID or FilterData
+    pub async fn select_one(&self, query: impl Into<QueryParam>) -> Result<Option<Record>, DatabaseError> {
+        let filter_data = query.into().to_filter_data();
         let results = self.select_any(filter_data).await?;
         Ok(results.into_iter().next())
     }
 
-    pub async fn select_404(&self, filter_data: FilterData) -> Result<Record, DatabaseError> {
-        match self.select_one(filter_data).await? {
+    /// Select record or return 404 - accepts either UUID or FilterData
+    pub async fn select_404(&self, query: impl Into<QueryParam>) -> Result<Record, DatabaseError> {
+        match self.select_one(query).await? {
             Some(record) => Ok(record),
             None => Err(DatabaseError::NotFound("Record not found".to_string()))
         }
     }
 
+    // REMOVED: update_by_id_404() - use update_404(uuid, record) instead
+    // The unified update_404() method now handles Uuid inputs seamlessly
+
     pub async fn count(&self, filter_data: FilterData) -> Result<i64, DatabaseError> {
         use crate::filter::Filter;
-        
+
         // Use Filter system to build count query
         let mut filter = Filter::new(&self.table_name)
             .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
@@ -194,7 +232,7 @@ impl Repository {
             .fetch_one(&self.pool)
             .await
             .map_err(DatabaseError::Sqlx)?;
-        
+
         let count: i64 = row.try_get(0).map_err(DatabaseError::Sqlx)?;
         Ok(count)
     }
@@ -226,108 +264,127 @@ impl Repository {
         for record in &mut records {
             record.set_operation(Operation::Create);
         }
-        
+
         // Use pipeline's Record-aware method (handles all conversion internally)
         let pipeline = Self::create_pipeline();
         pipeline.create_all_records(self.table_name.clone(), records).await
             .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 
-    /// Create record from API JSON input
-    pub async fn create_from_json(&self, json: Value) -> Result<Record, DatabaseError> {
-        let record = Record::from_json(json)
-            .map_err(|e| DatabaseError::QueryError(format!("Invalid input: {}", e)))?;
-        self.create_one(record).await
-    }
-
     // ========================================
-    // UPDATE Operations  
+    // UPDATE Operations
     // ========================================
 
-    /// Update a single record by ID
-    pub async fn update_one(&self, id: Uuid, updates: HashMap<String, Value>) -> Result<Record, DatabaseError> {
-        let results = self.update_all(vec![(id, updates)]).await?;
+    // REMOVED: update_one(id, HashMap) - use update_one(Record) instead
+    // REMOVED: update_all(Vec<(Uuid, HashMap)>) - use update_all(Vec<Record>) instead
+
+    /// Update a single record
+    pub async fn update_one(&self, record: Record) -> Result<Record, DatabaseError> {
+        let results = self.update_all(vec![record]).await?;
         Self::extract_single_result(results, "update_one")
     }
 
-    /// Update multiple records by ID (the clean way!)
-    pub async fn update_all(&self, updates: Vec<(Uuid, HashMap<String, Value>)>) -> Result<Vec<Record>, DatabaseError> {
-        use crate::observer::Operation as PipelineOperation;
-        
-        if updates.is_empty() {
+    /// Update multiple records
+    pub async fn update_all(&self, mut records: Vec<Record>) -> Result<Vec<Record>, DatabaseError> {
+        if records.is_empty() {
             return Ok(Vec::new());
         }
-        
-        // Load existing records
-        let ids: Vec<Uuid> = updates.iter().map(|(id, _)| *id).collect();
-        let existing_records = self.select_ids(ids).await?;
-        
-        // Apply changes to each record (this is SO much cleaner!)
-        let mut updated_records = Vec::new();
-        for (update_id, changes) in updates {
-            if let Some(mut record) = existing_records.iter().find(|r| r.id() == Some(update_id)).cloned() {
-                record.set_operation(Operation::Update);
-                record.apply_changes(changes);
-                updated_records.push(record);
-            } else {
-                return Err(DatabaseError::NotFound(format!("Record with ID {} not found", update_id)));
-            }
-        }
-        
-        // Use pipeline's Record-aware method (handles all conversion internally)
-        let pipeline = Self::create_pipeline();
-        pipeline.update_all_records(self.table_name.clone(), updated_records).await
-            .map_err(|e| DatabaseError::QueryError(e.to_string()))
-    }
 
-    /// Update records matching filter criteria (now incredibly simple!)
-    pub async fn update_any(&self, filter: FilterData, changes: HashMap<String, Value>) -> Result<Vec<Record>, DatabaseError> {
-        if changes.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // 1. Find records matching filter
-        let mut records = self.select_any(filter).await?;
-        
-        if records.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // 2. Apply changes to each record (so clean!)
+        // Set operation type for all records
         for record in &mut records {
             record.set_operation(Operation::Update);
-            record.apply_changes(changes.clone());
         }
 
-        // 3. Use pipeline's Record-aware method (handles all conversion internally)
+        // Use pipeline's Record-aware method (handles all conversion internally)
         let pipeline = Self::create_pipeline();
         pipeline.update_all_records(self.table_name.clone(), records).await
             .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 
-    /// Update multiple records by ID array
-    pub async fn update_ids(&self, ids: Vec<Uuid>, changes: HashMap<String, Value>) -> Result<Vec<Record>, DatabaseError> {
+    // REMOVED: update_any(filter, HashMap) - API layer should build Records with changes
+    // Use select_any() + Record.apply_changes() + update_all() pattern instead
+
+    // REMOVED: update_ids(Vec<Uuid>, HashMap) - API layer should build Records with IDs and changes
+    // Use select_ids() + Record.apply_changes() + update_all() pattern instead
+
+    // ========================================
+    // DELETE Operations
+    // ========================================
+
+    /// Delete a single record
+    pub async fn delete_one(&self, record: Record) -> Result<Record, DatabaseError> {
+        let results = self.delete_all(vec![record]).await?;
+        Self::extract_single_result(results, "delete_one")
+    }
+
+    /// Delete multiple records
+    pub async fn delete_all(&self, mut records: Vec<Record>) -> Result<Vec<Record>, DatabaseError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Set operation type for all records
+        for record in &mut records {
+            record.set_operation(Operation::Delete);
+        }
+
+        // Use pipeline's Record-aware method (handles all conversion internally)
+        let pipeline = Self::create_pipeline();
+        pipeline.delete_all_records(self.table_name.clone(), records).await
+            .map_err(|e| DatabaseError::QueryError(e.to_string()))
+    }
+
+    /// Delete record or return 404 - accepts either UUID or FilterData
+    pub async fn delete_404(&self, query: impl Into<QueryParam>) -> Result<Record, DatabaseError> {
+        let mut record = self.select_404(query).await?;  // 404 if not found
+        record.mark_deleted();  // Mark as soft deleted
+        self.delete_one(record).await
+    }
+
+    // ========================================
+    // UPDATE with 404 Operations
+    // ========================================
+
+    /// Update record or return 404 - accepts either UUID or FilterData  
+    pub async fn update_404(&self, query: impl Into<QueryParam>, updates: Record) -> Result<Record, DatabaseError> {
+        let mut existing_record = self.select_404(query).await?;  // 404 if not found
+        
+        // Apply updates to existing record
+        let update_data = updates.to_hashmap();
+        existing_record.apply_changes(update_data);
+        existing_record.set_operation(Operation::Update);
+        
+        self.update_one(existing_record).await
+    }
+
+    // ========================================
+    // Additional Utility Methods
+    // ========================================
+
+    /// Delete multiple records by IDs
+    pub async fn delete_ids(&self, ids: Vec<Uuid>) -> Result<Vec<Record>, DatabaseError> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
         
-        let updates = ids.into_iter()
-            .map(|id| (id, changes.clone()))
-            .collect();
-        
-        self.update_all(updates).await
+        let records = self.select_ids(ids).await?;
+        self.delete_all(records).await
     }
 
-    // Additional methods can be implemented as needed using the same patterns:
-    // - delete_one, delete_all, delete_any, delete_ids
-    // - revert_one, revert_all, revert_any, revert_ids  
-    // - update_404, delete_404, revert_404
-    // - access_one, access_all, access_any, access_404
-    //
-    // All follow the same clean pattern:
-    // 1. Load/create Records
-    // 2. Apply operations using Record methods
-    // 3. Run through observer pipeline
-    // 4. Return Records
+    /// Update multiple records by IDs with the same changes
+    pub async fn update_ids_with_record(&self, ids: Vec<Uuid>, updates: Record) -> Result<Vec<Record>, DatabaseError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        
+        let mut records = self.select_ids(ids).await?;
+        let update_data = updates.to_hashmap();
+        
+        for record in &mut records {
+            record.apply_changes(update_data.clone());
+            record.set_operation(Operation::Update);
+        }
+        
+        self.update_all(records).await
+    }
 }
-

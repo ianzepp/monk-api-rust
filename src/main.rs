@@ -6,6 +6,7 @@ mod api;
 mod auth;
 mod config;
 mod database;
+mod error;
 mod filter;
 mod handlers;
 mod observer;

@@ -235,6 +235,16 @@ impl ObserverPipeline {
         self.handle_pipeline_result(result)
     }
 
+    /// Delete multiple records - Record in, Record out
+    /// For Repository usage - now works directly with Records!
+    pub async fn delete_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+        // Execute pipeline directly with Records - no conversion needed!
+        let result = self.execute_crud(Operation::Delete, schema_name, records).await?;
+        
+        // Handle errors and extract Records
+        self.handle_pipeline_result(result)
+    }
+
     // ========================================
     // Pipeline-level bulk methods (Record in/out)
     // ========================================
