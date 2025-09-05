@@ -62,7 +62,7 @@ pub async fn post(
     Ok(ApiResponse::created(data))
 }
 
-/// PUT /api/data/:schema - Bulk update records with filter criteria
+/// PUT /api/data/:schema - Upsert records (update if ID exists, create if no ID)
 pub async fn put(
     Path(schema): Path<String>,
     Query(query): Query<ListQuery>,
@@ -70,69 +70,56 @@ pub async fn put(
     Extension(TenantPool(pool)): Extension<TenantPool>,
     Extension(auth_user): Extension<AuthUser>,
 ) -> ApiResult<Value> {
-    // Expect payload with filter and updates
-    // { "filter": { "status": "draft" }, "updates": { "status": "published", "published_at": "2024-01-15" } }
-    let filter_data = payload.get("filter")
-        .and_then(|f| serde_json::from_value::<FilterData>(f.clone()).ok())
-        .unwrap_or_default();
-    
-    let updates = payload.get("updates")
-        .ok_or_else(|| ApiError::bad_request("Missing 'updates' field in payload"))?
-        .clone();
+    // Parse JSON array payload into Records
+    let records = Record::from_json_array(payload)?;
 
-    // Fetch matching records
+    // Use Repository upsert_all method (handles splitting and operations internally)
     let repository = Repository::new(&schema, pool);
-    let mut records = repository.select_any(filter_data).await?;
+    let upserted_records = repository.upsert_all(records).await?;
 
-    // Apply updates to each record
-    let updates_map = Record::json_to_hashmap(updates)?;
-    for record in &mut records {
-        record.apply_changes(updates_map.clone());
-    }
-
-    // Bulk update all records (handles observer pipeline)
-    let updated_records = repository.update_all(records).await?;
-
-    // Return array of updated records
-    let data = Record::to_api_output_array(updated_records);
+    // Return array of all upserted records
+    let data = Record::to_api_output_array(upserted_records);
     Ok(ApiResponse::success(data))
 }
 
-/// DELETE /api/data/:schema - Bulk delete records with filter criteria
+/// DELETE /api/data/:schema - Delete records by IDs from record array
 pub async fn delete(
     Path(schema): Path<String>,
     Query(query): Query<ListQuery>,
+    Json(payload): Json<Value>,
     Extension(TenantPool(pool)): Extension<TenantPool>,
     Extension(auth_user): Extension<AuthUser>,
 ) -> ApiResult<Value> {
-    // For DELETE, filter criteria can come from query params or request body
-    // For now, support basic query params (limit/offset) and match all
-    let filter_data = FilterData {
-        select: None,
-        where_clause: None, // Could be extended to accept filter query params
-        order: None,
-        limit: query.limit.map(|l| l.max(0) as i32),
-        offset: query.offset.map(|o| o.max(0) as i32),
-    };
+    // Parse JSON array payload into Records
+    let records = Record::from_json_array(payload)?;
 
-    // Fetch records to delete
-    let repository = Repository::new(&schema, pool);
-    let records = repository.select_any(filter_data).await?;
+    // Extract IDs from records
+    let mut ids = Vec::new();
+    for (index, record) in records.iter().enumerate() {
+        if let Some(id) = record.get_id() {
+            ids.push(id);
+        } else {
+            return Err(ApiError::bad_request(
+                format!("DELETE requires all records to have IDs. Record at index {} is missing an ID", index)
+            ));
+        }
+    }
 
-    if records.is_empty() {
-        // No records found to delete
+    if ids.is_empty() {
+        // No IDs to delete
         return Ok(ApiResponse::success(serde_json::json!([])));
     }
 
-    // Bulk delete records (handles soft delete via observer pipeline)
-    let deleted_records = repository.delete_all(records).await?;
+    // Delete records by IDs (handles soft delete via observer pipeline)
+    let repository = Repository::new(&schema, pool);
+    let deleted_records = repository.delete_ids(ids).await?;
 
     // Return array of deleted records (with soft delete timestamps)
     let data = Record::to_api_output_array(deleted_records);
     Ok(ApiResponse::success(data))
 }
 
-/// PATCH /api/data/:schema - Partial bulk update of records (same as PUT)
+/// PATCH /api/data/:schema - Update existing records (all records must have IDs)
 pub async fn patch(
     Path(schema): Path<String>,
     Query(query): Query<ListQuery>,
@@ -140,7 +127,23 @@ pub async fn patch(
     Extension(TenantPool(pool)): Extension<TenantPool>,
     Extension(auth_user): Extension<AuthUser>,
 ) -> ApiResult<Value> {
-    // PATCH is identical to PUT for schema-level operations
-    // Both are partial updates with filter criteria
-    put(Path(schema), Query(query), Json(payload), Extension(pool), Extension(auth_user)).await
+    // Parse JSON array payload into Records
+    let records = Record::from_json_array(payload)?;
+
+    // Validate that ALL records have IDs (required for PATCH)
+    for (index, record) in records.iter().enumerate() {
+        if !record.has_id() {
+            return Err(ApiError::bad_request(
+                format!("PATCH requires all records to have IDs. Record at index {} is missing an ID", index)
+            ));
+        }
+    }
+
+    // Update all records (will 404 if any ID doesn't exist via observer pipeline)
+    let repository = Repository::new(&schema, pool);
+    let updated_records = repository.update_all(records).await?;
+
+    // Return array of updated records
+    let data = Record::to_api_output_array(updated_records);
+    Ok(ApiResponse::success(data))
 }

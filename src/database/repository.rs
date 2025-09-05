@@ -285,6 +285,53 @@ impl Repository {
     }
 
     // ========================================
+    // UPSERT Operations
+    // ========================================
+
+    /// Upsert a single record (update if ID exists, create if no ID)
+    pub async fn upsert_one(&self, record: Record) -> Result<Record, DatabaseError> {
+        let results = self.upsert_all(vec![record]).await?;
+        Self::extract_single_result(results, "upsert_one")
+    }
+
+    /// Upsert multiple records (update if ID exists, create if no ID)
+    pub async fn upsert_all(&self, records: Vec<Record>) -> Result<Vec<Record>, DatabaseError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Split records into updates (with ID) and creates (without ID)
+        let mut records_to_update = Vec::new();
+        let mut records_to_create = Vec::new();
+
+        for mut record in records {
+            if record.has_id() {
+                record.set_operation(Operation::Update);
+                records_to_update.push(record);
+            } else {
+                record.set_operation(Operation::Create);
+                records_to_create.push(record);
+            }
+        }
+
+        let mut all_results = Vec::new();
+
+        // Update existing records
+        if !records_to_update.is_empty() {
+            let updated_records = self.update_all(records_to_update).await?;
+            all_results.extend(updated_records);
+        }
+
+        // Create new records
+        if !records_to_create.is_empty() {
+            let created_records = self.create_all(records_to_create).await?;
+            all_results.extend(created_records);
+        }
+
+        Ok(all_results)
+    }
+
+    // ========================================
     // UPDATE Operations
     // ========================================
 
