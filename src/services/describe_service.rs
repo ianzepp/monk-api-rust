@@ -2,8 +2,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
-use std::collections::HashMap;
-use uuid::Uuid;
 
 use crate::database::manager::{DatabaseError, DatabaseManager};
 use crate::database::record::Record;
@@ -68,7 +66,6 @@ pub enum DescribeError {
     #[error("JSON parsing error: {0}")]
     JsonParse(#[from] serde_json::Error),
 }
-
 
 pub struct DescribeService {
     pool: PgPool,
@@ -248,23 +245,35 @@ impl DescribeService {
         // Check if column already exists
         let columns_repo = Repository::new("columns", self.pool.clone());
         if self.column_exists(&columns_repo, schema_name, column_name).await? {
-            return Err(DescribeError::AlreadyExists(format!("Column '{}' already exists in schema '{}'", column_name, schema_name)));
+            return Err(DescribeError::AlreadyExists(format!(
+                "Column '{}' already exists in schema '{}'",
+                column_name, schema_name
+            )));
         }
 
         // Parse column definition into Record - CreateColumnDdl observer will handle ALTER TABLE ADD COLUMN
-        let column_record = self.parse_column_definition(schema_name, column_name, &column_definition, is_required)?;
-        
+        let column_record = self.parse_column_definition(
+            schema_name,
+            column_name,
+            &column_definition,
+            is_required,
+        )?;
+
         let created_column = columns_repo.create_one(column_record).await?;
         Ok(created_column)
     }
 
     /// Get column by schema and name
-    pub async fn select_column(&self, schema_name: &str, column_name: &str) -> Result<Option<Record>, DescribeError> {
+    pub async fn select_column(
+        &self,
+        schema_name: &str,
+        column_name: &str,
+    ) -> Result<Option<Record>, DescribeError> {
         use crate::filter::FilterData;
 
         let columns_repo = Repository::new("columns", self.pool.clone());
         let filter = FilterData {
-            where_clause: Some(serde_json::json!({ 
+            where_clause: Some(serde_json::json!({
                 "schema_name": schema_name,
                 "column_name": column_name,
                 "deleted_at": null
@@ -277,10 +286,17 @@ impl DescribeService {
     }
 
     /// Get column by schema and name, return 404 error if not found
-    pub async fn select_column_404(&self, schema_name: &str, column_name: &str) -> Result<Record, DescribeError> {
-        self.select_column(schema_name, column_name)
-            .await?
-            .ok_or_else(|| DescribeError::NotFound(format!("Column '{}' not found in schema '{}'", column_name, schema_name)))
+    pub async fn select_column_404(
+        &self,
+        schema_name: &str,
+        column_name: &str,
+    ) -> Result<Record, DescribeError> {
+        self.select_column(schema_name, column_name).await?.ok_or_else(|| {
+            DescribeError::NotFound(format!(
+                "Column '{}' not found in schema '{}'",
+                column_name, schema_name
+            ))
+        })
     }
 
     /// Update existing column from JSON Schema property
@@ -299,16 +315,15 @@ impl DescribeService {
 
         // Find existing column
         let existing_column = self.select_column_404(schema_name, column_name).await?;
-        
+
         // Determine required status - use provided value or keep existing
         let required = is_required.unwrap_or_else(|| {
-            existing_column.get("is_required")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+            existing_column.get("is_required").and_then(|v| v.as_bool()).unwrap_or(false)
         });
 
         // Parse updated column definition - UpdateColumnDdl observer will handle safe ALTER COLUMN operations
-        let updated_record = self.parse_column_definition(schema_name, column_name, &column_definition, required)?;
+        let updated_record =
+            self.parse_column_definition(schema_name, column_name, &column_definition, required)?;
 
         // Get column ID for update
         let column_id = existing_column
@@ -321,7 +336,11 @@ impl DescribeService {
     }
 
     /// Delete column (soft delete)
-    pub async fn delete_column(&self, schema_name: &str, column_name: &str) -> Result<bool, DescribeError> {
+    pub async fn delete_column(
+        &self,
+        schema_name: &str,
+        column_name: &str,
+    ) -> Result<bool, DescribeError> {
         // Validate schema protection
         self.validate_schema_protection(schema_name)?;
 
@@ -348,12 +367,19 @@ impl DescribeService {
     }
 
     /// Delete column by schema and name, return 404 error if not found
-    pub async fn delete_column_404(&self, schema_name: &str, column_name: &str) -> Result<(), DescribeError> {
+    pub async fn delete_column_404(
+        &self,
+        schema_name: &str,
+        column_name: &str,
+    ) -> Result<(), DescribeError> {
         let deleted = self.delete_column(schema_name, column_name).await?;
         if deleted {
             Ok(())
         } else {
-            Err(DescribeError::NotFound(format!("Column '{}' not found in schema '{}'", column_name, schema_name)))
+            Err(DescribeError::NotFound(format!(
+                "Column '{}' not found in schema '{}'",
+                column_name, schema_name
+            )))
         }
     }
 
@@ -368,7 +394,7 @@ impl DescribeService {
         is_required: bool,
     ) -> Result<Record, DescribeError> {
         let pg_type = self.json_schema_type_to_postgres(column_definition);
-        
+
         let mut column_record = Record::new();
         column_record
             .set("schema_name", schema_name)
@@ -386,7 +412,7 @@ impl DescribeService {
         if let Some(default) = &column_definition.default {
             column_record.set("default_value", default.to_string());
         }
-        
+
         // Handle numeric constraints (minimum/maximum) or string constraints (minLength/maxLength)
         match column_definition.property_type.as_str() {
             "string" => {
@@ -415,7 +441,7 @@ impl DescribeService {
                 }
             }
         }
-        
+
         if let Some(pattern) = &column_definition.pattern {
             column_record.set("pattern_regex", pattern);
         }
@@ -425,19 +451,23 @@ impl DescribeService {
         if let Some(desc) = &column_definition.description {
             column_record.set("description", desc);
         }
-        
+
         // Skip x-monk-relationship for now as requested
-        
+
         Ok(column_record)
     }
 
-    async fn schema_exists(&self, schemas_repo: &Repository, schema_name: &str) -> Result<bool, DescribeError> {
+    async fn schema_exists(
+        &self,
+        schemas_repo: &Repository,
+        schema_name: &str,
+    ) -> Result<bool, DescribeError> {
         use crate::filter::FilterData;
-        
+
         let filter = FilterData {
-            where_clause: Some(serde_json::json!({ 
+            where_clause: Some(serde_json::json!({
                 "name": schema_name,
-                "deleted_at": null 
+                "deleted_at": null
             })),
             ..Default::default()
         };
@@ -446,14 +476,19 @@ impl DescribeService {
         Ok(!results.is_empty())
     }
 
-    async fn column_exists(&self, columns_repo: &Repository, schema_name: &str, column_name: &str) -> Result<bool, DescribeError> {
+    async fn column_exists(
+        &self,
+        columns_repo: &Repository,
+        schema_name: &str,
+        column_name: &str,
+    ) -> Result<bool, DescribeError> {
         use crate::filter::FilterData;
-        
+
         let filter = FilterData {
-            where_clause: Some(serde_json::json!({ 
+            where_clause: Some(serde_json::json!({
                 "schema_name": schema_name,
                 "column_name": column_name,
-                "deleted_at": null 
+                "deleted_at": null
             })),
             ..Default::default()
         };
@@ -520,7 +555,6 @@ impl DescribeService {
         }
     }
 
-
     async fn insert_column_records(
         &self,
         columns_repo: &Repository,
@@ -532,7 +566,12 @@ impl DescribeService {
 
         for (column_name, column_definition) in &json_schema.properties {
             let is_required = required_fields.contains(column_name);
-            let column_record = self.parse_column_definition(schema_name, column_name, column_definition, is_required)?;
+            let column_record = self.parse_column_definition(
+                schema_name,
+                column_name,
+                column_definition,
+                is_required,
+            )?;
             columns_repo.create_one(column_record).await?;
         }
 
