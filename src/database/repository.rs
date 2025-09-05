@@ -217,7 +217,7 @@ impl Repository {
     pub async fn select_any(&self, filter_data: FilterData) -> Result<Vec<Record>, DatabaseError> {
         // Use pipeline's Record-aware method (handles all conversion internally)
         let pipeline = Self::create_pipeline();
-        pipeline.select_any_records(self.table_name.clone(), filter_data, self.pool.clone()).await
+        pipeline.select(&self.table_name, filter_data, self.pool.clone()).await
             .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 
@@ -290,7 +290,7 @@ impl Repository {
 
         // Use pipeline's Record-aware method (handles all conversion internally)
         let pipeline = Self::create_pipeline();
-        pipeline.create_all_records(self.table_name.clone(), records, self.pool.clone()).await
+        pipeline.modify(crate::types::Operation::Create, &self.table_name, records, self.pool.clone()).await
             .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 
@@ -372,7 +372,7 @@ impl Repository {
 
         // Use pipeline's Record-aware method (handles all conversion internally)
         let pipeline = Self::create_pipeline();
-        pipeline.update_all_records(self.table_name.clone(), records, self.pool.clone()).await
+        pipeline.modify(crate::types::Operation::Update, &self.table_name, records, self.pool.clone()).await
             .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 
@@ -410,7 +410,7 @@ impl Repository {
 
         // Use pipeline's Record-aware method (handles all conversion internally)
         let pipeline = Self::create_pipeline();
-        pipeline.delete_all_records(self.table_name.clone(), records, self.pool.clone()).await
+        pipeline.modify(crate::types::Operation::Delete, &self.table_name, records, self.pool.clone()).await
             .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 

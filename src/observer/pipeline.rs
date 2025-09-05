@@ -44,179 +44,84 @@ impl ObserverPipeline {
         tracing::debug!("Registered observer '{}' for ring {:?}", name, ring);
     }
     
-    /// Execute observer pipeline for CRUD operations (CREATE, UPDATE, DELETE, REVERT)
-    /// Now works directly with Records - no more conversion overhead!
-    pub async fn execute_crud(
+    /// Execute modification operations (CREATE, UPDATE, DELETE, REVERT)
+    pub async fn modify(
         &self,
         operation: Operation,
-        schema_name: String,
+        schema_name: impl Into<String>,
         records: Vec<crate::database::record::Record>,
         pool: sqlx::PgPool,
-    ) -> Result<ObserverResult, ObserverError> {
+    ) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+        let ctx = ObserverContext::new(operation, schema_name.into(), records, pool);
+        let result = self.execute_internal(ctx).await?;
+        self.extract_records(result)
+    }
+    
+    /// Execute SELECT operations
+    pub async fn select(
+        &self,
+        schema_name: impl Into<String>,
+        filter_data: FilterData,
+        pool: sqlx::PgPool,
+    ) -> Result<Vec<crate::database::record::Record>, ObserverError> {
+        let ctx = ObserverContext::new_select(schema_name.into(), filter_data, pool);
+        let result = self.execute_internal(ctx).await?;
+        self.extract_records(result)
+    }
+    
+    /// Internal pipeline execution - handles all operation types
+    async fn execute_internal(&self, mut ctx: ObserverContext) -> Result<ObserverResult, ObserverError> {
         let start_time = Instant::now();
-        
-        let mut ctx = ObserverContext::new(operation, schema_name, records, pool);
-        
-        // Get relevant rings for this operation (performance optimization)
-        let relevant_rings = ObserverRing::for_operation(&operation);
+        let relevant_rings = ObserverRing::for_operation(&ctx.operation);
         
         tracing::info!(
-            "Observer pipeline starting: operation={:?}, schema={}, rings={:?}",
+            "Pipeline starting: op={:?}, schema={}, rings={:?}",
             ctx.operation, ctx.schema_name, relevant_rings
         );
         
-        // Execute synchronous rings (0-6) in sequence
-        for &ring in relevant_rings.iter().filter(|&&r| r.is_synchronous()) {
+        // Execute all synchronous rings in order
+        for &ring in relevant_rings.iter().filter(|r| r.is_synchronous()) {
             ctx.current_ring = Some(ring);
             
             let should_continue = self.execute_ring(ring, &mut ctx).await?;
             if !should_continue {
-                tracing::warn!("Observer pipeline stopped at ring {:?} due to errors", ring);
+                tracing::warn!("Pipeline stopped at ring {:?} due to errors", ring);
                 break;
             }
         }
         
-        // Execute asynchronous rings (7-9) in parallel after database operations
+        // Execute async rings (when implemented)
         if ctx.result.is_some() {
             self.execute_async_rings(&relevant_rings, &ctx).await;
         }
         
-        let total_time = start_time.elapsed();
-        
-        // Extract results from Records
-        let result_data: Vec<Value> = if ctx.result.is_some() {
-            ctx.result.unwrap()
-        } else {
-            // If no result from Ring 5, extract from Records
-            ctx.records.into_iter()
-                .map(|record| record.to_json())
-                .collect()
-        };
+        self.build_result(ctx, start_time.elapsed(), relevant_rings)
+    }
+
+    /// Build final result from context
+    fn build_result(&self, ctx: ObserverContext, duration: Duration, rings: Vec<ObserverRing>) -> Result<ObserverResult, ObserverError> {
+        let result_data = ctx.result.unwrap_or_else(|| {
+            ctx.records.into_iter().map(|record| record.to_json()).collect()
+        });
         
         Ok(ObserverResult {
             success: ctx.errors.is_empty(),
             result: Some(result_data),
             errors: ctx.errors,
             warnings: ctx.warnings,
-            execution_time: total_time,
-            rings_executed: relevant_rings,
+            execution_time: duration,
+            rings_executed: rings,
         })
     }
     
-    /// Execute observer pipeline for SELECT operations
-    pub async fn execute_select(
-        &self,
-        schema_name: String,
-        filter_data: FilterData,
-        pool: sqlx::PgPool,
-    ) -> Result<ObserverResult, ObserverError> {
-        let start_time = Instant::now();
-        
-        let mut ctx = ObserverContext::new_select(schema_name, filter_data, pool);
-        
-        // Get relevant rings for SELECT operation
-        let relevant_rings = ObserverRing::for_operation(&Operation::Select);
-        
-        tracing::info!(
-            "Observer SELECT pipeline starting: schema={}, rings={:?}",
-            ctx.schema_name, relevant_rings
-        );
-        
-        // Phase 1: Query Preparation (Rings 0-4)
-        // Observers work with filter_data and query_metadata
-        for &ring in relevant_rings.iter().filter(|&&r| r.is_synchronous() && (r as u8) < 5) {
-            ctx.current_ring = Some(ring);
-            let should_continue = self.execute_ring(ring, &mut ctx).await?;
-            if !should_continue {
-                tracing::warn!("SELECT query preparation stopped at ring {:?} due to errors", ring);
-                return Ok(ObserverResult::failure(ctx.errors, start_time.elapsed()));
-            }
-        }
-        
-        // Phase 2: Database Execution (Ring 5)
-        // Creates Records from query results
-        ctx.current_ring = Some(ObserverRing::Database);
-        self.execute_ring(ObserverRing::Database, &mut ctx).await?;
-        
-        // Phase 3: Result Processing (Rings 6+)
-        // Now Records are available for processing
-        for &ring in relevant_rings.iter().filter(|&&r| r.is_synchronous() && (r as u8) >= 6) {
-            ctx.current_ring = Some(ring);
-            self.execute_ring(ring, &mut ctx).await?;
-        }
-        
-        // Phase 4: Async Processing (Rings 8-9)
-        // Execute in background, don't block response
-        self.execute_async_rings(&relevant_rings, &ctx).await;
-        
-        // Convert Records back to JSON for API response
-        let result_data: Vec<Value> = if let Some(result) = ctx.result {
-            result
-        } else {
-            ctx.records.into_iter()
-                .map(|record| record.to_json())
-                .collect()
-        };
-        
-        Ok(ObserverResult::success(result_data, start_time.elapsed(), relevant_rings))
-    }
-
-    // ========================================
-    // Repository-level methods (Record in/out) - handles all conversion internally
-    // ========================================
-
-    /// Create multiple records - Record in, Record out
-    /// For Repository usage - now works directly with Records!
-    pub async fn create_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
-        // Execute pipeline directly with Records - no conversion needed!
-        let result = self.execute_crud(Operation::Create, schema_name, records, pool).await?;
-        
-        // Handle errors and extract Records
-        self.handle_pipeline_result(result)
-    }
-
-    /// Update multiple records - Record in, Record out  
-    /// For Repository usage - now works directly with Records!
-    pub async fn update_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
-        // Execute pipeline directly with Records - no conversion needed!
-        let result = self.execute_crud(Operation::Update, schema_name, records, pool).await?;
-        
-        // Handle errors and extract Records
-        self.handle_pipeline_result(result)
-    }
-
-    /// Select records with filter - Record out
-    /// For Repository usage - now works directly with Records!
-    pub async fn select_any_records(&self, schema_name: String, filter_data: FilterData, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
-        // Execute pipeline - no conversion needed!
-        let result = self.execute_select(schema_name, filter_data, pool).await?;
-        
-        // Handle errors and extract Records
-        self.handle_pipeline_result(result)
-    }
-
-    /// Delete multiple records - Record in, Record out
-    /// For Repository usage - now works directly with Records!
-    pub async fn delete_all_records(&self, schema_name: String, records: Vec<crate::database::record::Record>, pool: sqlx::PgPool) -> Result<Vec<crate::database::record::Record>, ObserverError> {
-        // Execute pipeline directly with Records - no conversion needed!
-        let result = self.execute_crud(Operation::Delete, schema_name, records, pool).await?;
-        
-        // Handle errors and extract Records
-        self.handle_pipeline_result(result)
-    }
-
-
-
-    /// Handle pipeline result - check for errors and convert to Records
-    fn handle_pipeline_result(&self, result: ObserverResult) -> Result<Vec<crate::database::record::Record>, ObserverError> {
-        // Check for pipeline errors
+    /// Extract Records from ObserverResult
+    fn extract_records(&self, result: ObserverResult) -> Result<Vec<crate::database::record::Record>, ObserverError> {
         if !result.success {
             return Err(ObserverError::ValidationError(
-                format!("Observer pipeline validation failed: {} errors", result.errors.len())
+                format!("Pipeline failed with {} errors", result.errors.len())
             ));
         }
-
-        // Convert JSON results to Records
+        
         let json_results = result.result.unwrap_or_default();
         let mut records = Vec::new();
         
@@ -228,7 +133,7 @@ impl ObserverPipeline {
                 records.push(record);
             } else {
                 return Err(ObserverError::ValidationError(
-                    "Invalid result format from pipeline - expected JSON object".to_string()
+                    "Invalid result format - expected JSON object".to_string()
                 ));
             }
         }
@@ -238,78 +143,47 @@ impl ObserverPipeline {
 
     /// Execute observers in a specific ring
     async fn execute_ring(&self, ring: ObserverRing, ctx: &mut ObserverContext) -> Result<bool, ObserverError> {
-        let observers = match self.observers.get(&ring) {
-            Some(obs) => obs,
-            None => {
-                tracing::debug!("No observers registered for ring {:?}", ring);
-                return Ok(true);
-            }
+        let Some(observers) = self.observers.get(&ring) else {
+            tracing::debug!("No observers registered for ring {:?}", ring);
+            return Ok(true);
         };
         
         tracing::debug!("Executing ring {:?} with {} observers", ring, observers.len());
         
         for observer in observers {
-            // Check if observer applies to this operation and schema
-            if !observer.applies_to_operation(ctx.operation) {
-                tracing::trace!("Observer {} skipped - doesn't apply to operation {:?}", 
-                              observer.name(), ctx.operation);
+            if !observer.applies_to_operation(ctx.operation) || !observer.applies_to_schema(&ctx.schema_name) {
                 continue;
             }
             
-            if !observer.applies_to_schema(&ctx.schema_name) {
-                tracing::trace!("Observer {} skipped - doesn't apply to schema {}", 
-                              observer.name(), ctx.schema_name);
-                continue;
-            }
-            
-            let observer_start = Instant::now();
-            
-            // Execute with timeout protection
-            let result = timeout(
-                observer.timeout(),
-                observer.execute_sync(ctx)
-            ).await;
-            
-            let execution_time = observer_start.elapsed();
-            
-            match result {
-                Ok(Ok(_)) => {
-                    tracing::debug!(
-                        "Observer: {} completed successfully in {:?}",
-                        observer.name(), execution_time
-                    );
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(
-                        "Observer: {} failed in {:?}: {}",
-                        observer.name(), execution_time, error
-                    );
-                    
-                    // Collect error for user feedback
-                    ctx.errors.push(error);
-                }
-                Err(_timeout) => {
-                    let timeout_error = ObserverError::TimeoutError(
-                        format!("Observer {} timed out after {:?}", 
-                                observer.name(), observer.timeout())
-                    );
-                    
-                    tracing::error!(
-                        "Observer: {} timed out after {:?}",
-                        observer.name(), observer.timeout()
-                    );
-                    
-                    ctx.errors.push(timeout_error);
-                }
-            }
+            self.execute_observer(observer, ctx).await;
         }
         
-        // Stop execution on errors for pre-database rings
-        if !ctx.errors.is_empty() && ring.is_synchronous() && (ring as u8) < 5 {
-            return Ok(false);
-        }
+        // Stop on errors for pre-database rings
+        Ok(ctx.errors.is_empty() || (ring as u8) >= 5)
+    }
+    
+    /// Execute a single observer with timeout and error handling
+    async fn execute_observer(&self, observer: &ObserverBox, ctx: &mut ObserverContext) {
+        let start = Instant::now();
+        let result = timeout(observer.timeout(), observer.execute_sync(ctx)).await;
+        let duration = start.elapsed();
         
-        Ok(true)
+        match result {
+            Ok(Ok(_)) => {
+                tracing::debug!("Observer {} completed in {:?}", observer.name(), duration);
+            }
+            Ok(Err(error)) => {
+                tracing::warn!("Observer {} failed in {:?}: {}", observer.name(), duration, error);
+                ctx.errors.push(error);
+            }
+            Err(_) => {
+                let timeout_error = ObserverError::TimeoutError(
+                    format!("Observer {} timed out after {:?}", observer.name(), observer.timeout())
+                );
+                tracing::error!("Observer {} timed out after {:?}", observer.name(), observer.timeout());
+                ctx.errors.push(timeout_error);
+            }
+        }
     }
     
     /// Execute asynchronous rings in parallel (non-blocking)
