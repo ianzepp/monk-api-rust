@@ -53,9 +53,9 @@ pub enum Commands {
     },
     
     #[command(about = "Schema and metadata management")]
-    Meta {
+    Describe {
         #[command(subcommand)]
-        cmd: commands::meta::MetaCommands,
+        cmd: commands::describe::DescribeCommands,
     },
     
     #[command(about = "Fixture data generation, building, and deployment")]
@@ -90,7 +90,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Tenant { cmd } => commands::tenant::handle(cmd, output_format).await,
         Commands::Auth { cmd } => commands::auth::handle(cmd, output_format).await,
         Commands::Data { cmd } => commands::data::handle(cmd, output_format).await,
-        Commands::Meta { cmd } => commands::meta::handle(cmd, output_format).await,
+        Commands::Describe { cmd } => commands::describe::handle(cmd, output_format).await,
         Commands::Fixture { cmd } => commands::fixture::handle(cmd, output_format).await,
     }
 }

@@ -2,7 +2,7 @@ use clap::Subcommand;
 use crate::cli::OutputFormat;
 
 #[derive(Subcommand)]
-pub enum MetaCommands {
+pub enum DescribeCommands {
     #[command(about = "Select specific schema")]
     Select {
         #[arg(help = "Schema name")]
@@ -34,34 +34,34 @@ pub enum MetaCommands {
     },
 }
 
-pub async fn handle(cmd: MetaCommands, _output_format: OutputFormat) -> anyhow::Result<()> {
+pub async fn handle(cmd: DescribeCommands, _output_format: OutputFormat) -> anyhow::Result<()> {
     match cmd {
-        MetaCommands::Select { schema } => {
+        DescribeCommands::Select { schema } => {
             println!("Selecting schema: {}", schema);
             // TODO: Implement schema selection
             Ok(())
         }
-        MetaCommands::Create => {
+        DescribeCommands::Create => {
             println!("Creating schema from stdin...");
             // TODO: Implement schema creation
             Ok(())
         }
-        MetaCommands::Update { schema } => {
+        DescribeCommands::Update { schema } => {
             println!("Updating schema: {} from stdin", schema);
             // TODO: Implement schema update
             Ok(())
         }
-        MetaCommands::Delete { schema } => {
+        DescribeCommands::Delete { schema } => {
             println!("Deleting schema: {}", schema);
             // TODO: Implement schema deletion
             Ok(())
         }
-        MetaCommands::List => {
+        DescribeCommands::List => {
             println!("Listing all schemas...");
             // TODO: Implement schema listing
             Ok(())
         }
-        MetaCommands::Columns { schema } => {
+        DescribeCommands::Columns { schema } => {
             println!("Showing columns for schema: {}", schema);
             // TODO: Implement schema column listing
             Ok(())

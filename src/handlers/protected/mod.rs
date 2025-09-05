@@ -4,33 +4,33 @@
 // These handlers provide the core API functionality for authenticated users.
 //
 // Security Level: JWT Authentication Required
-// Route Prefix: /api/* (e.g., /api/auth/*, /api/data/*, /api/meta/*)  
+// Route Prefix: /api/* (e.g., /api/auth/*, /api/data/*, /api/describe/*)  
 // Middleware: JWT validation + user context + system dependencies
 
 // Protected module declarations
 pub mod auth;  // User account management endpoints
 pub mod data;   // Dynamic data CRUD operations  
-pub mod meta;   // JSON Schema management endpoints
+pub mod describe;   // JSON Schema management endpoints
 pub mod find;   // Advanced filtered finds
 
 // Re-export all handler functions for easy importing
 pub use auth::*;
 pub use data::*; 
-pub use meta::*;
+pub use describe::*;
 
 /*
 PROTECTED HANDLER ARCHITECTURE:
 
 This module mirrors the monk-api TypeScript protected handlers:
-- TypeScript: src/routes/ (auth, data, meta subdirectories)
-- Rust:       src/handlers/protected/ (auth, data, meta subdirectories)
+- TypeScript: src/routes/ (auth, data, describe subdirectories)
+- Rust:       src/handlers/protected/ (auth, data, describe subdirectories)
 
 Middleware Stack Applied to All Protected Routes:
 ```rust
 Router::new()
     .route("/api/auth/whoami", get(protected::auth::whoami_get))
     .route("/api/data/:schema", get(protected::data::schema_get))
-    .route("/api/meta/:schema", get(protected::meta::schema_get))
+    .route("/api/describe/:schema", get(protected::describe::schema_get))
     .layer(jwt_auth_middleware())        // Validates JWT token
     .layer(user_validation_middleware()) // Loads user context
     .layer(system_context_middleware())  // Injects dependencies
@@ -62,7 +62,7 @@ Handler Categories:
    - Bulk operations for efficiency
    - Query filtering, pagination, and sorting
 
-3. **Meta Handlers** (/api/meta/):
+3. **Describe Handlers** (/api/describe/):
    - JSON Schema definition management
    - Automatic PostgreSQL table generation
    - Schema versioning and migration support

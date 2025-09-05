@@ -62,7 +62,7 @@ fn protected_api_routes() -> Router {
         // Merge all protected route groups (without /api prefix since we're nested)
         .merge(data_routes())
         .merge(find_routes()) 
-        .merge(meta_routes())
+        .merge(describe_routes())
         .merge(auth_routes())
         // Apply shared middleware stack to ALL /api/* routes
         .layer(middleware::from_fn(crate::middleware::validate_user_middleware))      // 3rd: Validate user in tenant DB
@@ -134,18 +134,18 @@ fn find_routes() -> Router {
         // No middleware here - applied at the /api level
 }
 
-fn meta_routes() -> Router {
+fn describe_routes() -> Router {
     use axum::routing::{delete, post, put};
-    use handlers::protected::meta;
+    use handlers::protected::describe;
 
     Router::new()
         // Schema definition management - routes without /api prefix since we're nested
         .route(
-            "/meta/:schema",
-            get(meta::schema_get)
-                .post(meta::schema_post)
-                .put(meta::schema_put)
-                .delete(meta::schema_delete),
+            "/describe/:schema",
+            get(describe::schema_get)
+                .post(describe::schema_post)
+                .put(describe::schema_put)
+                .delete(describe::schema_delete),
         )
         // No middleware here - applied at the /api level
 }
@@ -164,7 +164,7 @@ async fn root() -> axum::response::Json<Value> {
                 "public_auth": "/auth/login/:tenant/:user, /auth/refresh/:tenant/:user (public - token acquisition)",
                 "docs": "/docs[/:api] (public)",
                 "auth": "/api/auth/* (protected - user management)",
-                "meta": "/api/meta/:schema (protected)",
+                "describe": "/api/describe/:schema (protected)",
                 "data": "/api/data/:schema[/:record] (protected)",
                 "find": "/api/find/:schema (protected)",
                 "bulk": "/api/bulk (protected)",
@@ -175,7 +175,7 @@ async fn root() -> axum::response::Json<Value> {
             "documentation": {
                 "home": ["/README.md"],
                 "auth": ["/docs/auth", "/docs/public-auth"],
-                "meta": ["/docs/meta"],
+                "describe": ["/docs/describe"],
                 "data": ["/docs/data"],
                 "find": ["/docs/find"],
                 "bulk": ["/docs/bulk"],

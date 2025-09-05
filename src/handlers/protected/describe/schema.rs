@@ -12,7 +12,7 @@ pub struct MetaQuery {
     pub tenant: Option<String>,
 }
 
-/// GET /api/meta/:schema - Get JSON Schema definition for a schema
+/// GET /api/describe/:schema - Get JSON Schema definition for a schema
 /// 
 /// Returns the YAML JSON Schema definition that was used to create the PostgreSQL table.
 /// This allows monk-cli to retrieve schema definitions for validation and tooling.
@@ -60,7 +60,7 @@ pub async fn get(
     )
 }
 
-/// POST /api/meta/:schema - Create a new schema from JSON Schema definition
+/// POST /api/describe/:schema - Create a new schema from JSON Schema definition
 /// 
 /// Accepts a JSON Schema definition and:
 /// 1. Validates schema against JSON Schema specification
@@ -83,13 +83,13 @@ pub async fn post(
         StatusCode::NOT_IMPLEMENTED,
         Json(json!({
             "success": false,
-            "error": format!("POST /api/meta/{} not yet implemented", schema),
+            "error": format!("POST /api/describe/{} not yet implemented", schema),
             "message": "This will create a new schema from JSON Schema definition"
         })),
     )
 }
 
-/// PUT /api/meta/:schema - Update an existing schema definition
+/// PUT /api/describe/:schema - Update an existing schema definition
 /// 
 /// Accepts a JSON Schema definition and:
 /// 1. Validates new schema definition
@@ -114,13 +114,13 @@ pub async fn put(
         StatusCode::NOT_IMPLEMENTED,
         Json(json!({
             "success": false,
-            "error": format!("PUT /api/meta/{} not yet implemented", schema),
+            "error": format!("PUT /api/describe/{} not yet implemented", schema),
             "message": "This will update an existing schema definition"
         })),
     )
 }
 
-/// DELETE /api/meta/:schema - Delete a schema and its associated table
+/// DELETE /api/describe/:schema - Delete a schema and its associated table
 /// 
 /// WARNING: This is destructive and will:
 /// 1. Drop the PostgreSQL table (losing all data)
@@ -140,7 +140,7 @@ pub async fn delete(
         StatusCode::NOT_IMPLEMENTED,
         Json(json!({
             "success": false,
-            "error": format!("DELETE /api/meta/{} not yet implemented", schema),
+            "error": format!("DELETE /api/describe/{} not yet implemented", schema),
             "message": "This will delete the schema and associated table (destructive operation)"
         })),
     )
